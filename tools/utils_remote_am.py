@@ -47,16 +47,3 @@ def am_logout():
 
 def get_am_data():
     return ad.BaseData()
-
-
-if __name__ == '__main__':
-    am_login()
-    amd = get_am_data()
-
-    # info = amd.get_code_info(security_type=AmazingSecurityType.EXTRA_STOCK_A)
-    # print(info)
-
-    code_list = amd.get_code_list(security_type=AmazingSecurityType.EXTRA_STOCK_A_SH_SZ)
-    print(code_list)
-
-    am_logout()
