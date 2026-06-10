@@ -1,4 +1,5 @@
 """
+https://github.com/nats-io/nats-server/releases
 根据操作系统与 CPU 架构，从 _service 目录选择 nats-server 二进制并管理进程。
 """
 from __future__ import annotations
