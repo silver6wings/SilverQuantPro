@@ -5,7 +5,7 @@
 ------------
 
 1. 单订阅
-   - 同一时刻只允许一个 subscribe_whole_quote，避免多个 code_list / quotes dict 互相串数据。
+   - 同一时刻只允许一个 subscribe_whole_quote。
    - 再次 subscribe 前须先 unsubscribe_quote。
 
 2. 数据接收与缓存
@@ -22,12 +22,7 @@
    - 若某个 interval 内没有收到匹配的 tick，跳过 callback，不会传入空 dict。
 
 5. callback 串行
-   - dispatch 会 await callback 结束后再进入下一轮 sleep；callback 慢会推迟下一轮。
-
-6. 并发与线程安全
-   - subscribe_whole_quote 内部启动 NATS 消费循环，无需外部调用 run。
-   - unsubscribe_quote 仅取消业务订阅，可在任意线程调用。
-   - quotes 的写入与 swap 由 asyncio.Lock 保护，避免 tick 丢失。
+   - 上一轮 callback 未完成时跳过本轮 dispatch。
 
 用法示例
 --------
@@ -36,20 +31,19 @@
     def callback_sub_whole(quotes: dict) -> None:
         ...
 
-    seq = consumer.subscribe_whole_quote(["000001.SZ"], callback_sub_whole)
+    if consumer.subscribe_whole_quote(["000001.SZ"], callback_sub_whole) != 0:
+        raise RuntimeError("subscribe failed")
     try:
-        consumer.wait()  # 或自行阻塞主线程
+        consumer.wait()
     finally:
-        consumer.unsubscribe_quote(seq)
+        consumer.unsubscribe_quote()
 """
 import asyncio
 import json
 import logging
 import os
 import threading
-import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
 from typing import Any
 
 import nats
@@ -67,51 +61,58 @@ _DEFAULT_DISPATCH_INTERVAL = 1.0
 Quotes = dict[str, dict[str, Any]]
 QuoteCallback = Callable[[Quotes], None]
 
-
-@dataclass
-class QuoteSubscription:
-    sequence: int
-    code_list: frozenset[str]
-    callback: QuoteCallback
-    quotes: Quotes = field(default_factory=dict)
-    callback_running: bool = False
-    skipped_count: int = 0
-    quotes_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+_SUB_OK = 0
+_SUB_FAIL = -1
 
 
 class AmazingNatsConsumer:
+    """NATS 行情消费端。
+
+    线程模型（两个线程协作）：
+    - 主线程：调用 subscribe / unsubscribe / wait，读写订阅配置。
+    - runner 线程（daemon）：内部跑一个 asyncio 事件循环，负责收 NATS 消息、
+      定时 dispatch、在线程池里执行用户 callback。
+
+    _lock 的作用：
+    - 保护 _callback、_code_list、_quotes 等共享状态，避免主线程与 runner 线程
+      同时读写导致数据错乱。
+    - 持锁时间很短（只做判断和 dict 读写），且不在持锁期间 await，避免卡死事件循环。
+    """
+
     def __init__(
         self,
         nats_url: str = NATS_URL,
         subject: str = NATS_SUBJECT,
         interval: float = _DEFAULT_DISPATCH_INTERVAL,
     ) -> None:
+        """初始化配置。此时还没有启动 runner 线程，也不会连接 NATS。"""
         self.nats_url = nats_url
         self.subject = subject
         self.interval = interval
-        self._next_sequence = 0
-        self._subscription: QuoteSubscription | None = None
+        self.quote_count = 0
+
         self._lock = threading.Lock()
+        self._callback: QuoteCallback | None = None
+        self._code_list: frozenset[str] = frozenset()
+        self._quotes: Quotes = {}
+        self._callback_running = False
+
         self._runner_thread: threading.Thread | None = None
         self._nc: NATS | None = None
-        self.total_count = 0
-        self.total_bytes = 0
-        self.window_count = 0
-        self.window_bytes = 0
-        self.decode_error_count = 0
-        self.missing_code_count = 0
 
     def subscribe_whole_quote(self, code_list: list[str], callback: QuoteCallback) -> int:
+        """注册行情回调。由主线程调用。
+
+        成功返回 0，已有订阅时返回 -1。
+        首次订阅会启动后台 runner 线程；之后重复订阅只更新内存状态，不重复建线程。
+        """
         with self._lock:
-            if self._subscription is not None:
-                raise RuntimeError("only one subscription allowed, unsubscribe first")
-            self._next_sequence += 1
-            sequence = self._next_sequence
-            self._subscription = QuoteSubscription(
-                sequence=sequence,
-                code_list=frozenset(code_list),
-                callback=callback,
-            )
+            if self._callback is not None:
+                return _SUB_FAIL
+            self._callback = callback
+            self._code_list = frozenset(code_list)
+            self._quotes = {}
+            self.quote_count = 0
             need_start = self._runner_thread is None or not self._runner_thread.is_alive()
 
         if need_start:
@@ -122,26 +123,44 @@ class AmazingNatsConsumer:
             )
             self._runner_thread.start()
 
-        logger.info("quote subscription started, sequence=%d, codes=%d", sequence, len(code_list))
-        return sequence
+        logger.info("quote subscription started, codes=%d", len(code_list))
+        return _SUB_OK
 
-    def unsubscribe_quote(self, sub_sequence: int) -> None:
+    def unsubscribe_quote(self) -> int:
+        """取消订阅。由主线程调用。
+
+        成功返回 0，本来就没订阅时返回 -1。
+        只清空订阅状态和缓存，runner 线程和 NATS 连接会继续存活（方便再次订阅）。
+        """
         with self._lock:
-            if self._subscription is None or self._subscription.sequence != sub_sequence:
-                return
-            self._subscription = None
+            if self._callback is None:
+                return _SUB_FAIL
+            self._callback = None
+            self._code_list = frozenset()
+            self._quotes = {}
 
-        logger.info("quote subscription stopped, sequence=%d", sub_sequence)
+        logger.info("quote subscription stopped, quote_count=%d", self.quote_count)
+        return _SUB_OK
 
     def wait(self) -> None:
+        """阻塞主线程，直到 runner 线程结束。
+
+        正常运行时 runner 是 while True 不会退出，所以通常靠 KeyboardInterrupt 打断。
+        """
         thread = self._runner_thread
         if thread is not None and thread.is_alive():
             thread.join()
 
     def _run_loop(self) -> None:
+        """runner 线程入口。在独立线程里创建并运行 asyncio 事件循环。"""
         asyncio.run(self._run_async())
 
     async def _run_async(self) -> None:
+        """在 runner 线程的 asyncio 事件循环中运行。
+
+        连接 NATS、注册 on_message，然后进入定时 dispatch 循环。
+        退出时 drain 连接，释放 NATS 资源。
+        """
         self._nc = await nats.connect(self.nats_url)
         await self._nc.subscribe(self.subject, cb=self.on_message)
 
@@ -154,107 +173,76 @@ class AmazingNatsConsumer:
             self._nc = None
 
     async def on_message(self, msg: Msg) -> None:
-        message_size = len(msg.data)
-        self.total_count += 1
-        self.total_bytes += message_size
-        self.window_count += 1
-        self.window_bytes += message_size
+        """NATS 消息回调，在 runner 线程的事件循环里异步触发。
 
+        解析 JSON 后，短暂持 _lock 写入 _quotes。
+        不在锁内做 await，避免阻塞事件循环。
+        """
         try:
             data = json.loads(msg.data)
+            # logger.debug("nats recv %s", next(iter(data)) if isinstance(data, dict) and data else data)
         except json.JSONDecodeError:
-            self.decode_error_count += 1
             return
 
         code, quote = self._extract_code_and_quote(data)
         if not code or quote is None:
-            self.missing_code_count += 1
             return
 
+        # logger.debug(code)
         with self._lock:
-            sub = self._subscription
-        if sub is None:
-            return
-        if sub.code_list and code not in sub.code_list:
-            return
-
-        async with sub.quotes_lock:
-            sub.quotes[code] = quote
+            if self._callback is None:
+                return
+            if self._code_list and code not in self._code_list:
+                return
+            self._quotes[code] = quote
+            self.quote_count += 1
 
     async def _dispatch_loop(self) -> None:
-        last_time = time.perf_counter()
+        """定时调度循环，在 runner 线程的事件循环里运行。
 
+        每 interval 秒醒来一次，若当前有订阅则尝试 dispatch。
+        sleep 期间事件循环可继续处理 on_message，不会耽误收消息。
+        """
         while True:
             await asyncio.sleep(self.interval)
 
             with self._lock:
-                sub = self._subscription
+                subscribed = self._callback is not None
 
-            now = time.perf_counter()
-            elapsed = now - last_time
-            last_time = now
-            current_time = time.localtime()
+            if subscribed:
+                await self._dispatch()
 
-            count = self.window_count
-            size_bytes = self.window_bytes
-            self.window_count = 0
-            self.window_bytes = 0
+    async def _dispatch(self) -> None:
+        """把缓存的 quotes 交给用户 callback。
 
-            msg_per_sec = count / elapsed if elapsed > 0 else 0
-            mb_per_sec = size_bytes / elapsed / 1024 / 1024 if elapsed > 0 else 0
-            avg_bytes = size_bytes / count if count else 0
-            pending_codes = len(sub.quotes) if sub is not None else 0
-            skipped = sub.skipped_count if sub is not None else 0
+        1. 若上一轮 callback 还在跑（_callback_running），本轮直接跳过。
+        2. 短暂持 _lock，把 _quotes swap 出来并清空，然后释放锁。
+        3. 用 asyncio.to_thread 在线程池执行 callback，不阻塞事件循环收消息。
 
-            logger.info(
-                "%s rate=%.0f msg/s, window_count=%d, window_size=%.2f MB, "
-                "throughput=%.2f MB/s, avg_size=%.0f B, total_count=%d, "
-                "active=%s, pending_codes=%d, decode_errors=%d, missing_code=%d, "
-                "skipped=%d, total_size=%.2f MB",
-                time.strftime("%Y-%m-%d %H:%M:%S", current_time),
-                msg_per_sec,
-                count,
-                size_bytes / 1024 / 1024,
-                mb_per_sec,
-                avg_bytes,
-                self.total_count,
-                sub is not None,
-                pending_codes,
-                self.decode_error_count,
-                self.missing_code_count,
-                skipped,
-                self.total_bytes / 1024 / 1024,
-            )
-
-            if sub is not None:
-                with self._lock:
-                    if self._subscription is sub:
-                        await self._dispatch_subscription(sub)
-
-    async def _dispatch_subscription(self, sub: QuoteSubscription) -> None:
-        if sub.callback_running:
-            sub.skipped_count += 1
+        注意：用户 callback 必须尽快返回，否则会拖慢后续 dispatch。
+        """
+        if self._callback_running:
             return
 
-        async with sub.quotes_lock:
-            if not sub.quotes:
+        with self._lock:
+            if self._callback is None or not self._quotes:
                 return
-            quotes = sub.quotes
-            sub.quotes = {}
+            quotes = self._quotes
+            self._quotes = {}
+            callback = self._callback
 
-        sub.callback_running = True
+        self._callback_running = True
         try:
-            await asyncio.to_thread(sub.callback, quotes)
+            await asyncio.to_thread(callback, quotes)
         finally:
-            sub.callback_running = False
+            self._callback_running = False
 
     @staticmethod
     def _extract_code_and_quote(data: dict[str, Any]) -> tuple[str | None, dict[str, Any] | None]:
+        """从 JSON dict 提取 code 和 quote。纯函数，不涉及线程。"""
         if len(data) == 1:
             code, quote = next(iter(data.items()))
             if isinstance(quote, dict) and "time" in quote:
                 return str(code), quote
 
         return None, None
-
-

@@ -46,7 +46,7 @@ class AmazingNatsProducer:
         self.code_list = list(code_list)
 
     def set_code_list_all(self) -> None:
-        self.code_list = AmazingDelegate.get_all_stock_codes()
+        self.code_list = AmazingDelegate.get_hs_stock_codes()
         logger.info("loaded all codes, count=%d", len(self.code_list))
 
     def start(self) -> None:

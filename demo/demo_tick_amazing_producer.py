@@ -1,6 +1,7 @@
 import logging
 from pathlib import Path
 
+from delegate.amazing_delegate import AmazingDelegate, AmazingSecurityType
 from data.tick.amazing_nats_producer import AmazingNatsProducer
 
 _LOG_LEVEL = logging.INFO
@@ -23,9 +24,11 @@ def setup_logging() -> None:
 def main() -> None:
     setup_logging()
 
-    producer = AmazingNatsProducer()
-    code_list = ["000001.SZ", "000002.SZ"]
+    delegate = AmazingDelegate()
+    code_list = delegate.get_codes(AmazingSecurityType.HSA_STOCK)
+    print(len(code_list), code_list)
 
+    producer = AmazingNatsProducer()
     producer.set_code_list(code_list)
     producer.run()
 

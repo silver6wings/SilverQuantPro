@@ -82,7 +82,8 @@ def _snapshot_to_qmt_quote(data: Snapshot) -> Quote:
 class AmazingDelegate:
     def __init__(self) -> None:
         am_login()
-        self.code_list = ["000001.SZ"]
+        self.amazing_data = get_am_data()
+        self.subscribed_code_list = ["000001.SZ"]
         self._thread: threading.Thread | None = None
 
     def __del__(self) -> None:
@@ -92,12 +93,22 @@ class AmazingDelegate:
             pass
 
     def set_code_list(self, code_list: list[str]) -> None:
-        self.code_list = list(code_list)
+        self.subscribed_code_list = list(code_list)
 
-    @staticmethod
-    def get_all_stock_codes() -> list[str]:
-        amd = get_am_data()
-        code_list = amd.get_code_list(security_type=AmazingSecurityType.EXTRA_STOCK_A_SH_SZ)
+    def get_codes(self, security_type: str) -> list[str]:
+        code_list = self.amazing_data.get_code_list(security_type=security_type)
+        return list(code_list)
+
+    def get_hs_stock_codes(self) -> list[str]:
+        code_list = self.amazing_data.get_code_list(security_type=AmazingSecurityType.HS_STOCK)
+        return list(code_list)
+
+    def get_hs_index_codes(self) -> list[str]:
+        code_list = self.amazing_data.get_code_list(security_type=AmazingSecurityType.HS_INDEX)
+        return list(code_list)
+
+    def get_hs_etf_codes(self) -> list[str]:
+        code_list = self.amazing_data.get_code_list(security_type=AmazingSecurityType.HS_ETF)
         return list(code_list)
 
     def start_sub(self, callback: QuoteCallback) -> None:
@@ -141,7 +152,7 @@ class AmazingDelegate:
     def _run_stocks(self, callback: QuoteCallback) -> None:
         sub_data = ad.SubscribeData()
 
-        @sub_data.register(code_list=self.code_list, period=ad.constant.Period.snapshot.value)
+        @sub_data.register(code_list=self.subscribed_code_list, period=ad.constant.Period.snapshot.value)
         def onSnapshot(data: Snapshot, period: Any) -> None:
             if self._thread is None:
                 return
