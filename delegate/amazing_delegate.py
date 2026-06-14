@@ -2,114 +2,55 @@
 Amazing Documents
 https://cloud.chinastock.com.cn/p/DSG36jYQx2IY_Y8CIAA
 """
+import logging
 import threading
 from typing import Any, Callable
 
 import AmazingData as ad
+from delegate.amazing_snapshot import Quote, Snapshot, snapshot_to_qmt_quote
 from tools.utils_remote_am import AmazingSecurityType, am_login, am_logout, get_am_data
 
-Quote = dict[str, Any]
+logger = logging.getLogger(__name__)
+
 QuoteCallback = Callable[[Quote], None]
-
-_LOT_SIZE = 100
-Snapshot = ad.constant.Snapshot | ad.constant.SnapshotIndex
-
-
-def _to_lots(volume: int | float | None) -> int:
-    if not volume:
-        return 0
-    return int(volume) // _LOT_SIZE
-
-
-def _snapshot_to_qmt_quote(data: Snapshot) -> Quote:
-    """Convert AmazingData snapshot to QMT xtdata quote format: {code: quote}."""
-    code = data.code
-    trade_time = data.trade_time
-    volume = int(data.volume or 0)
-    trading_phase_code = getattr(data, "trading_phase_code", None)
-
-    quote: dict[str, Any] = {
-        "time": int(trade_time.timestamp() * 1000),
-        "lastPrice": data.last,
-        "open": data.open,
-        "high": data.high,
-        "low": data.low,
-        "lastClose": data.pre_close,
-        "amount": data.amount,
-        "volume": volume // _LOT_SIZE,
-        "pvolume": volume,
-        "askPrice": [
-            getattr(data, "ask_price1", 0.0),
-            getattr(data, "ask_price2", 0.0),
-            getattr(data, "ask_price3", 0.0),
-            getattr(data, "ask_price4", 0.0),
-            getattr(data, "ask_price5", 0.0),
-        ],
-        "bidPrice": [
-            getattr(data, "bid_price1", 0.0),
-            getattr(data, "bid_price2", 0.0),
-            getattr(data, "bid_price3", 0.0),
-            getattr(data, "bid_price4", 0.0),
-            getattr(data, "bid_price5", 0.0),
-        ],
-        "askVol": [
-            _to_lots(getattr(data, "ask_volume1", 0)),
-            _to_lots(getattr(data, "ask_volume2", 0)),
-            _to_lots(getattr(data, "ask_volume3", 0)),
-            _to_lots(getattr(data, "ask_volume4", 0)),
-            _to_lots(getattr(data, "ask_volume5", 0)),
-        ],
-        "bidVol": [
-            _to_lots(getattr(data, "bid_volume1", 0)),
-            _to_lots(getattr(data, "bid_volume2", 0)),
-            _to_lots(getattr(data, "bid_volume3", 0)),
-            _to_lots(getattr(data, "bid_volume4", 0)),
-            _to_lots(getattr(data, "bid_volume5", 0)),
-        ],
-        "transactionNum": data.num_trades,
-        "stockStatus": trading_phase_code,
-        "openInt": 0,
-        "lastSettlementPrice": 0.0,
-        "settlementPrice": 0.0,
-        "pe": 0.0,
-        "volRatio": 0.0,
-        "speed1Min": 0.0,
-        "speed5Min": 0.0,
-    }
-    return {code: quote}
 
 
 class AmazingDelegate:
+    _instance: "AmazingDelegate | None" = None
+    _lock = threading.Lock()
+    _initialized = False
+
+    def __new__(cls) -> "AmazingDelegate":
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+        return cls._instance
+
     def __init__(self) -> None:
-        am_login()
-        self.amazing_data = get_am_data()
-        self.subscribed_code_list = ["000001.SZ"]
-        self._thread: threading.Thread | None = None
+        if AmazingDelegate._initialized:
+            return
+        with AmazingDelegate._lock:
+            if AmazingDelegate._initialized:
+                return
+            am_login()
+            self.amazing_data = get_am_data()
+            self.subscribed_code_list = ["000001.SZ"]
+            self._thread: threading.Thread | None = None
+            AmazingDelegate._initialized = True
 
     def __del__(self) -> None:
+        if AmazingDelegate._instance is not self:
+            return
         try:
             am_logout()
         except Exception:
             pass
 
-    def set_code_list(self, code_list: list[str]) -> None:
+    # ======== subscribe ticks ========
+
+    def set_sub_code_list(self, code_list: list[str]) -> None:
         self.subscribed_code_list = list(code_list)
-
-    def get_codes(self, security_type: str) -> list[str]:
-        code_list = self.amazing_data.get_code_list(security_type=security_type)
-        return list(code_list)
-
-    def get_hs_stock_codes(self) -> list[str]:
-        code_list = self.amazing_data.get_code_list(security_type=AmazingSecurityType.HS_STOCK)
-        return list(code_list)
-
-    def get_hs_index_codes(self) -> list[str]:
-        code_list = self.amazing_data.get_code_list(security_type=AmazingSecurityType.HS_INDEX)
-        return list(code_list)
-
-    def get_hs_etf_codes(self) -> list[str]:
-        code_list = self.amazing_data.get_code_list(security_type=AmazingSecurityType.HS_ETF)
-        return list(code_list)
 
     def start_sub(self, callback: QuoteCallback) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -117,7 +58,7 @@ class AmazingDelegate:
             return
 
         self._thread = threading.Thread(
-            target=self._run_stocks,
+            target=self._run_subscribe,
             args=(callback,),
             name="amazing-delegate",
             daemon=True,
@@ -149,17 +90,52 @@ class AmazingDelegate:
             return
         thread.join(timeout=timeout)
 
-    def _run_stocks(self, callback: QuoteCallback) -> None:
+    def _run_subscribe(self, callback: QuoteCallback) -> None:
         sub_data = ad.SubscribeData()
 
         @sub_data.register(code_list=self.subscribed_code_list, period=ad.constant.Period.snapshot.value)
         def onSnapshot(data: Snapshot, period: Any) -> None:
             if self._thread is None:
                 return
-            callback(_snapshot_to_qmt_quote(data))
+            # data convert to qmt quote
+            try:
+                quote = snapshot_to_qmt_quote(data)
+            except Exception:
+                code = getattr(data, "code", type(data).__name__)
+                logger.critical(
+                    "failed to convert snapshot to qmt quote: code=%s",
+                    code,
+                    exc_info=True,
+                )
+                return
+            # quote callback
+            try:
+                callback(quote)
+            except Exception:
+                code = getattr(data, "code", type(data).__name__)
+                logger.exception("snapshot callback failed: code=%s", code)
 
         try:
             sub_data.run()
         finally:
             if self._thread is threading.current_thread():
                 self._thread = None
+
+    # ======== random get codes ========
+
+    @classmethod
+    def get_codes(cls, security_type: str) -> list[str]:
+        code_list = cls().amazing_data.get_code_list(security_type=security_type)
+        return list(code_list)
+
+    @classmethod
+    def get_hs_stock_codes(cls) -> list[str]:
+        return cls.get_codes(AmazingSecurityType.HS_STOCK)
+
+    @classmethod
+    def get_hs_index_codes(cls) -> list[str]:
+        return cls.get_codes(AmazingSecurityType.HS_INDEX)
+
+    @classmethod
+    def get_hs_etf_codes(cls) -> list[str]:
+        return cls.get_codes(AmazingSecurityType.HS_ETF)

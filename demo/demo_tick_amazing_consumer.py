@@ -54,7 +54,6 @@ callback 编写原则
 import logging
 from pathlib import Path
 
-from delegate.amazing_delegate import AmazingDelegate
 from data.tick.amazing_nats_consumer import AmazingNatsConsumer
 
 _LOG_LEVEL = logging.DEBUG
@@ -77,12 +76,17 @@ def setup_logging() -> None:
 def main() -> None:
     setup_logging()
 
-    code_list = ['000001.SZ', '000002.SZ', '600000.SH', '300001.SZ']
-    # code_list = ["000001.SH"]
-
-    # delegate = AmazingDelegate()
-    # code_list = delegate.get_hs_index_codes()
-    # print(len(code_list), code_list)
+    code_list = [
+        '000001.SZ',    # stock
+        '300001.SZ',    # stock
+        '600000.SH',    # stock
+        '688001.SH',    # stock
+        '920000.BJ',    # stock
+        '000001.SH',    # index
+        '399001.SZ',    # index
+        '159159.SZ',    # etf
+        '510510.SH',    # etf
+    ]
 
     consumer = AmazingNatsConsumer(interval=1.0)
     if consumer.subscribe_whole_quote(code_list, callback=callback_sub_whole) != 0:

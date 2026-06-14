@@ -24,12 +24,17 @@ DEFAULT_NATS_URL = os.getenv("NATS_URL", "nats://127.0.0.1:4222")
 
 _PLATFORM_ALIASES: dict[str, str] = {
     "darwin": "darwin",
+    "linux": "linux",
     "windows": "windows",
 }
 
 _ARCH_ALIASES: dict[str, str] = {
     "arm64": "arm64",
     "aarch64": "arm64",
+    "armv6l": "arm6",
+    "armv7l": "arm6",
+    "armv8l": "arm6",
+    "arm6": "arm6",
     "amd64": "amd64",
     "x86_64": "amd64",
     "x64": "amd64",
@@ -52,6 +57,7 @@ class RuntimeInfo:
 class NatsServiceConfig:
     service_dir: Path = DEFAULT_SERVICE_DIR
     nats_url: str = DEFAULT_NATS_URL
+    bind_addr: str = os.getenv("NATS_BIND_ADDR", "0.0.0.0")
     startup_timeout: float = 5.0
     stop_timeout: float = 5.0
 
@@ -98,14 +104,15 @@ class NatsServiceManager:
         binary = resolve_nats_binary(runtime, self.config.service_dir)
         self._ensure_executable(binary)
 
-        cmd = [str(binary), "-p", str(self.port)]
+        cmd = [str(binary), "-a", self.config.bind_addr, "-p", str(self.port)]
         if extra_args:
             cmd.extend(extra_args)
 
         logger.info(
-            "starting nats-server: platform=%s, binary=%s, port=%d",
+            "starting nats-server: platform=%s, binary=%s, addr=%s, port=%d",
             runtime.label,
             binary.name,
+            self.config.bind_addr,
             self.port,
         )
 
@@ -392,8 +399,20 @@ def _find_pids_on_port_windows(port: int) -> list[int]:
     return sorted(set(pids))
 
 
+def _platform_arch_in_name(name: str, platform_key: str, arch_key: str) -> bool:
+    token = f"{platform_key}-{arch_key}".lower()
+    start = 0
+    while True:
+        idx = name.find(token, start)
+        if idx == -1:
+            return False
+        end = idx + len(token)
+        if end >= len(name) or not name[end].isalnum():
+            return True
+        start = idx + 1
+
+
 def _match_nats_binaries(service_dir: Path, runtime: RuntimeInfo) -> list[Path]:
-    token = f"{runtime.platform_key}-{runtime.arch_key}".lower()
     matched: list[Path] = []
 
     for path in sorted(service_dir.glob("nats-server*")):
@@ -401,11 +420,11 @@ def _match_nats_binaries(service_dir: Path, runtime: RuntimeInfo) -> list[Path]:
             continue
 
         name = path.name.lower()
-        if token not in name:
+        if not _platform_arch_in_name(name, runtime.platform_key, runtime.arch_key):
             continue
         if runtime.platform_key == "windows" and path.suffix.lower() != ".exe":
             continue
-        if runtime.platform_key == "darwin" and path.suffix.lower() == ".exe":
+        if runtime.platform_key in {"darwin", "linux"} and path.suffix.lower() == ".exe":
             continue
 
         matched.append(path)

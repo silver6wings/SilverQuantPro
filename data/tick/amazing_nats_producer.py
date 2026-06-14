@@ -57,7 +57,7 @@ class AmazingNatsProducer:
         logger.info("publishing snapshots to %s", self.nats_producer.subject)
 
         self.amazing_delegate = AmazingDelegate()
-        self.amazing_delegate.set_code_list(self.code_list)
+        self.amazing_delegate.set_sub_code_list(self.code_list)
 
         self.nats_producer.start()
         self.amazing_delegate.start_sub(callback=self.on_tick)
