@@ -50,7 +50,6 @@ callback 编写原则
         for code, quote in quotes.items():
             ...
 """
-
 import logging
 from pathlib import Path
 
@@ -86,6 +85,8 @@ def main() -> None:
         '399001.SZ',    # index
         '159159.SZ',    # etf
         '510510.SH',    # etf
+        '123268.SZ',    # kzz
+        '113066.SH',    # kzz
     ]
 
     consumer = AmazingNatsConsumer(interval=1.0)

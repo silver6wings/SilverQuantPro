@@ -1,17 +1,22 @@
+"""
+Demo：调用 data/amazing_job.py 推送全市场 tick。
+
+用法
+----
+    PYTHONPATH=. python demo/demo_tick_amazing_producer.py
+"""
 import logging
 from pathlib import Path
 
-from delegate.amazing_delegate import AmazingDelegate, AmazingSecurityType
-from data.tick.amazing_nats_producer import AmazingNatsProducer
+from data.amazing_job import run
 
-_LOG_LEVEL = logging.INFO
 _LOG_PATH = Path("_cache/demo_producer.log")
 
 
 def setup_logging() -> None:
     _LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
-        level=_LOG_LEVEL,
+        level=logging.DEBUG,
         format="%(asctime)s %(levelname)s %(message)s",
         handlers=[
             logging.StreamHandler(),
@@ -23,27 +28,8 @@ def setup_logging() -> None:
 
 def main() -> None:
     setup_logging()
+    run()
 
-    delegate = AmazingDelegate()
-
-    stock_code_list = delegate.get_codes(AmazingSecurityType.HSA_STOCK)
-    print(len(stock_code_list), stock_code_list)
-
-    index_code_list = delegate.get_codes(AmazingSecurityType.HSA_INDEX)
-    print(len(index_code_list), index_code_list)
-
-    etf_code_list = delegate.get_codes(AmazingSecurityType.HS_ETF)
-    print(len(etf_code_list), etf_code_list)
-
-    producer = AmazingNatsProducer()
-    producer.set_code_list(stock_code_list + index_code_list + etf_code_list)
-    producer.run()
-
-
-# NOTE:
-# 深交所：17:00 结束
-# 上交所: 16:30 结束
-# 北交所: 
 
 if __name__ == "__main__":
     main()

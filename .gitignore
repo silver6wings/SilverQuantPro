@@ -140,3 +140,5 @@ cython_debug/
 .idea/
 
 _cache/*
+
+credentials.py

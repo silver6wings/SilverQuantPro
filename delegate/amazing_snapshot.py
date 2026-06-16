@@ -2,7 +2,6 @@
 Convert AmazingData snapshots to QMT xtdata quote format: {code: quote}.
 字段定义见开发手册附录 4.2。
 """
-from __future__ import annotations
 
 from typing import Any
 

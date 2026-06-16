@@ -16,7 +16,7 @@ async def main() -> None:
     }
 
     await producer.push(payload, flush=True)
-    print(f"published to {producer.subject}: {payload}")
+    print(f"published to {producer.nats_subject}: {payload}")
 
     await producer.close()
 
@@ -43,9 +43,9 @@ def demo_nats_threaded_producer() -> None:
         producer.close()
         return
 
-    print(f"enqueued for {producer.subject}: {payload}")
+    print(f"enqueued for {producer.nats_subject}: {payload}")
     producer.close()
-    print(f"published to {producer.subject}: {payload}")
+    print(f"published to {producer.nats_subject}: {payload}")
 
 
 if __name__ == "__main__":

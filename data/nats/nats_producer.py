@@ -1,6 +1,5 @@
 import asyncio
 import json
-import os
 import queue
 import threading
 
@@ -9,15 +8,17 @@ from typing import Any
 import nats
 from nats.aio.client import Client as NATS
 
-
-NATS_URL = os.getenv("NATS_URL", "nats://127.0.0.1:4222")
-SUBJECT = os.getenv("NATS_SUBJECT", "market.tick.demo")
+from credentials import NATS_PRODUCER_SUBJECT, NATS_PRODUCER_URL
 
 
 class NatsProducer:
-    def __init__(self, nats_url: str = NATS_URL, subject: str = SUBJECT) -> None:
+    def __init__(
+        self,
+        nats_url: str = NATS_PRODUCER_URL,
+        nats_subject: str = NATS_PRODUCER_SUBJECT,
+    ) -> None:
         self.nats_url = nats_url
-        self.subject = subject
+        self.nats_subject = nats_subject
         self.nc: NATS | None = None
 
     async def connect(self) -> None:
@@ -29,7 +30,7 @@ class NatsProducer:
         assert self.nc is not None
 
         payload = json.dumps(data, ensure_ascii=False).encode("utf-8")
-        await self.nc.publish(self.subject, payload)
+        await self.nc.publish(self.nats_subject, payload)
         if flush:
             await self.flush()
 
@@ -47,14 +48,14 @@ class NatsProducer:
 class NatsThreadedProducer:
     def __init__(
         self,
-        nats_url: str = NATS_URL,
-        subject: str = SUBJECT,
+        nats_url: str = NATS_PRODUCER_URL,
+        nats_subject: str = NATS_PRODUCER_SUBJECT,
         batch_size: int = 500,
         flush_interval: float = 0.05,
         max_queue_size: int = 100_000,
     ) -> None:
         self.nats_url = nats_url
-        self.subject = subject
+        self.nats_subject = nats_subject
         self.batch_size = batch_size
         self.flush_interval = flush_interval
         self.queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=max_queue_size)
@@ -85,7 +86,7 @@ class NatsThreadedProducer:
         asyncio.run(self._worker())
 
     async def _worker(self) -> None:
-        producer = NatsProducer(self.nats_url, self.subject)
+        producer = NatsProducer(self.nats_url, self.nats_subject)
         try:
             while not self.stop_event.is_set() or not self.queue.empty():
                 sent = 0

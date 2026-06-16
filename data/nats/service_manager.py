@@ -2,7 +2,6 @@
 https://github.com/nats-io/nats-server/releases
 根据操作系统与 CPU 架构，从 _service 目录选择 nats-server 二进制并管理进程。
 """
-from __future__ import annotations
 
 import atexit
 import logging
@@ -16,17 +15,22 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from credentials import NATS_BIND_ADDR, NATS_PRODUCER_URL
+
 logger = logging.getLogger(__name__)
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SERVICE_DIR = PROJECT_ROOT / "_service"
-DEFAULT_NATS_URL = os.getenv("NATS_URL", "nats://127.0.0.1:4222")
+DEFAULT_NATS_URL = NATS_PRODUCER_URL
+
 
 _PLATFORM_ALIASES: dict[str, str] = {
     "darwin": "darwin",
     "linux": "linux",
     "windows": "windows",
 }
+
 
 _ARCH_ALIASES: dict[str, str] = {
     "arm64": "arm64",
@@ -57,7 +61,7 @@ class RuntimeInfo:
 class NatsServiceConfig:
     service_dir: Path = DEFAULT_SERVICE_DIR
     nats_url: str = DEFAULT_NATS_URL
-    bind_addr: str = os.getenv("NATS_BIND_ADDR", "0.0.0.0")
+    bind_addr: str = NATS_BIND_ADDR
     startup_timeout: float = 5.0
     stop_timeout: float = 5.0
 
@@ -97,7 +101,7 @@ class NatsServiceManager:
         if existing_pids:
             raise RuntimeError(
                 f"port {self.port} already in use by pid(s) {existing_pids}; "
-                f"run `python demo/demo_nats_service.py kill --port {self.port}` first"
+                f"run `python data/nats_service.py kill --port {self.port}` first"
             )
 
         runtime = detect_runtime()
@@ -169,7 +173,7 @@ class NatsServiceManager:
 
         logger.info("nats-server stopped")
 
-    def __enter__(self) -> NatsServiceManager:
+    def __enter__(self) -> "NatsServiceManager":
         self.start()
         return self
 

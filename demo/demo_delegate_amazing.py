@@ -1,5 +1,8 @@
 import datetime
-from delegate.amazing_delegate import AmazingDelegate, Quote
+
+from delegate.amazing_delegate import AmazingDelegate
+from delegate.amazing_snapshot import Quote
+from delegate.amazing_subscriber import AmazingSubscriber
 
 
 def callback(payload: Quote) -> None:
@@ -8,13 +11,14 @@ def callback(payload: Quote) -> None:
 
 def demo() -> None:
     delegate = AmazingDelegate()
-    delegate.start_sub(callback=callback)
+    subscriber = AmazingSubscriber(delegate)
+    subscriber.start_sub(callback=callback)
     try:
-        delegate.wait()
+        subscriber.wait()
     except KeyboardInterrupt:
         pass
     finally:
-        delegate.stop_sub()
+        subscriber.stop_sub()
 
 
 if __name__ == "__main__":

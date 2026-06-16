@@ -41,7 +41,6 @@
 import asyncio
 import json
 import logging
-import os
 import threading
 from collections.abc import Callable
 from typing import Any
@@ -50,11 +49,9 @@ import nats
 from nats.aio.client import Client as NATS
 from nats.aio.msg import Msg
 
+from credentials import NATS_CONSUMER_SUBJECT, NATS_CONSUMER_URL
 
 logger = logging.getLogger(__name__)
-
-NATS_URL = os.getenv("NATS_URL", "nats://127.0.0.1:4222")
-NATS_SUBJECT = os.getenv("NATS_SUBJECT", "market.tick.amazing")
 
 _DEFAULT_DISPATCH_INTERVAL = 1.0
 
@@ -81,13 +78,13 @@ class AmazingNatsConsumer:
 
     def __init__(
         self,
-        nats_url: str = NATS_URL,
-        subject: str = NATS_SUBJECT,
+        nats_url: str = NATS_CONSUMER_URL,
+        nats_subject: str = NATS_CONSUMER_SUBJECT,
         interval: float = _DEFAULT_DISPATCH_INTERVAL,
     ) -> None:
         """初始化配置。此时还没有启动 runner 线程，也不会连接 NATS。"""
         self.nats_url = nats_url
-        self.subject = subject
+        self.nats_subject = nats_subject
         self.interval = interval
         self.quote_count = 0
 
@@ -162,9 +159,9 @@ class AmazingNatsConsumer:
         退出时 drain 连接，释放 NATS 资源。
         """
         self._nc = await nats.connect(self.nats_url)
-        await self._nc.subscribe(self.subject, cb=self.on_message)
+        await self._nc.subscribe(self.nats_subject, cb=self.on_message)
 
-        logger.info("subscribed to %s on %s", self.subject, self.nats_url)
+        logger.info("subscribed to %s on %s", self.nats_subject, self.nats_url)
 
         try:
             await self._dispatch_loop()
@@ -227,8 +224,7 @@ class AmazingNatsConsumer:
         with self._lock:
             if self._callback is None or not self._quotes:
                 return
-            quotes = self._quotes
-            self._quotes = {}
+            quotes, self._quotes = self._quotes, {}
             callback = self._callback
 
         self._callback_running = True

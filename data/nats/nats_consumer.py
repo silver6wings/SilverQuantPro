@@ -1,6 +1,5 @@
 import asyncio
 import json
-import os
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -8,18 +7,19 @@ import nats
 from nats.aio.client import Client as NATS
 from nats.aio.msg import Msg
 
-
-NATS_URL = os.getenv("NATS_URL", "nats://127.0.0.1:4222")
-SUBJECT = os.getenv("NATS_SUBJECT", "market.tick.*")
-
+from credentials import NATS_CONSUMER_SUBJECT, NATS_CONSUMER_URL
 
 MessageCallback = Callable[[dict[str, Any] | str], None | Awaitable[None]]
 
 
 class NatsConsumer:
-    def __init__(self, nats_url: str = NATS_URL, subject: str = SUBJECT) -> None:
+    def __init__(
+        self,
+        nats_url: str = NATS_CONSUMER_URL,
+        nats_subject: str = NATS_CONSUMER_SUBJECT,
+    ) -> None:
         self.nats_url = nats_url
-        self.subject = subject
+        self.nats_subject = nats_subject
         self.nc: NATS | None = None
 
     async def connect(self) -> None:
@@ -36,8 +36,8 @@ class NatsConsumer:
             if result is not None:
                 await result
 
-        await self.nc.subscribe(self.subject, cb=handle_message)
-        print(f"subscribed to {self.subject} on {self.nats_url}")
+        await self.nc.subscribe(self.nats_subject, cb=handle_message)
+        print(f"subscribed to {self.nats_subject} on {self.nats_url}")
 
         try:
             while True:
