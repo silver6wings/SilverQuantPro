@@ -1,12 +1,12 @@
 """
-生产方订阅行情数据，通过 NATS 推送 QMT quotes 格式。
+生产方订阅行情数据，通过 NATS 推送统一 tick quote 格式。
 """
 import logging
 
-from credentials import NATS_BATCH_SIZE, NATS_FLUSH_INTERVAL, NATS_MAX_QUEUE_SIZE, NATS_PRODUCER_SUBJECT, NATS_PRODUCER_URL
+from credentials import NATS_AM_SUBJECT, NATS_BATCH_SIZE, NATS_FLUSH_INTERVAL, NATS_MAX_QUEUE_SIZE, NATS_PRODUCER_URL
 from data.nats.nats_producer import NatsThreadedProducer
+from data.tick.tick_quote import TickPayload
 from delegate.amazing_delegate import AmazingDelegate
-from delegate.amazing_snapshot import Quote
 from delegate.amazing_subscriber import AmazingSubscriber
 
 logger = logging.getLogger(__name__)
@@ -18,7 +18,7 @@ class AmazingNatsProducer:
     def __init__(
         self,
         nats_url: str = NATS_PRODUCER_URL,
-        nats_subject: str = NATS_PRODUCER_SUBJECT,
+        nats_subject: str = NATS_AM_SUBJECT,
         batch_size: int = NATS_BATCH_SIZE,
         flush_interval: float = NATS_FLUSH_INTERVAL,
         max_queue_size: int = NATS_MAX_QUEUE_SIZE,
@@ -77,7 +77,7 @@ class AmazingNatsProducer:
         finally:
             self.stop()
 
-    def on_tick(self, payload: Quote) -> None:
+    def on_tick(self, payload: TickPayload) -> None:
         logger.debug(payload)
         if self.nats_producer.push(payload):
             self.pushed_count += 1

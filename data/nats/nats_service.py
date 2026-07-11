@@ -16,6 +16,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from credentials import NATS_BIND_ADDR, NATS_PRODUCER_URL
+from data.base.base_service import BaseService
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +67,7 @@ class NatsServiceConfig:
     stop_timeout: float = 5.0
 
 
-class NatsServiceManager:
+class NatsService(BaseService):
     def __init__(self, config: NatsServiceConfig | None = None) -> None:
         self.config = config or NatsServiceConfig()
         self._process: subprocess.Popen[bytes] | None = None
@@ -88,20 +89,20 @@ class NatsServiceManager:
     def port(self) -> int:
         return parse_nats_port(self.config.nats_url)
 
-    def is_running(self) -> bool:
+    def is_active(self) -> bool:
         return self._process is not None and self._process.poll() is None
 
-    def start(self, extra_args: list[str] | None = None) -> Path:
-        if self.is_running():
+    def start(self, extra_args: list[str] | None = None) -> None:
+        if self.is_active():
             assert self._binary_path is not None
             logger.info("nats-server already running on port %d (%s)", self.port, self._binary_path.name)
-            return self._binary_path
+            return
 
         existing_pids = find_pids_on_port(self.port)
         if existing_pids:
             raise RuntimeError(
                 f"port {self.port} already in use by pid(s) {existing_pids}; "
-                f"run `python data/nats_service.py kill --port {self.port}` first"
+                "stop the existing listener before starting nats-server"
             )
 
         runtime = detect_runtime()
@@ -139,7 +140,6 @@ class NatsServiceManager:
             raise RuntimeError(f"nats-server failed to start on port {self.port}{detail}")
 
         logger.info("nats-server started on port %d (pid=%s)", self.port, self.pid)
-        return binary
 
     def stop(self) -> None:
         process = self._process
@@ -173,7 +173,7 @@ class NatsServiceManager:
 
         logger.info("nats-server stopped")
 
-    def __enter__(self) -> "NatsServiceManager":
+    def __enter__(self) -> "NatsService":
         self.start()
         return self
 
@@ -233,18 +233,36 @@ def kill_processes_on_port(port: int, timeout: float = 5.0) -> list[int]:
 
 
 def kill_pid(pid: int, timeout: float = 5.0) -> bool:
+    if platform.system().lower() == "windows":
+        taskkill_commands = (
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            ["taskkill", "/PID", str(pid), "/F"],
+        )
+        for command in taskkill_commands:
+            # SECURITY-REVIEW: fixed taskkill command with numeric PID; no shell=True.
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                errors="replace",
+                check=False,
+            )
+            if result.returncode == 0:
+                return True
+            details = _format_command_output(result.stdout, result.stderr)
+            logger.warning(
+                "failed to terminate pid %s with `%s` (exit=%s)%s",
+                pid,
+                " ".join(command),
+                result.returncode,
+                f": {details}" if details else "",
+            )
+        return False
+
     try:
         os.kill(pid, 0)
     except OSError:
         return False
-
-    if platform.system().lower() == "windows":
-        result = subprocess.run(
-            ["taskkill", "/PID", str(pid), "/T", "/F"],
-            capture_output=True,
-            check=False,
-        )
-        return result.returncode == 0
 
     try:
         os.killpg(os.getpgid(pid), signal.SIGTERM)
@@ -271,6 +289,11 @@ def kill_pid(pid: int, timeout: float = 5.0) -> bool:
         except OSError:
             return True
     return True
+
+
+def is_nats_server_pid(pid: int) -> bool:
+    name = _process_name(pid).lower()
+    return "nats-server" in name
 
 
 def detect_runtime() -> RuntimeInfo:
@@ -401,6 +424,47 @@ def _find_pids_on_port_windows(port: int) -> list[int]:
         except ValueError:
             continue
     return sorted(set(pids))
+
+
+def _process_name(pid: int) -> str:
+    if platform.system().lower() == "windows":
+        # SECURITY-REVIEW: fixed tasklist command with numeric PID; no shell=True.
+        result = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+            capture_output=True,
+            text=True,
+            errors="replace",
+            check=False,
+        )
+        if result.returncode != 0:
+            return ""
+        line = result.stdout.strip()
+        if not line or "no tasks are running" in line.lower():
+            return ""
+        name = line.split(",", 1)[0].strip().strip('"')
+        return name
+
+    # SECURITY-REVIEW: fixed ps command with numeric PID; no shell=True.
+    result = subprocess.run(
+        ["ps", "-p", str(pid), "-o", "comm="],
+        capture_output=True,
+        text=True,
+        errors="replace",
+        check=False,
+    )
+    if result.returncode != 0:
+        return ""
+    return result.stdout.strip()
+
+
+def _format_command_output(stdout: str | None, stderr: str | None) -> str:
+    parts = []
+    for output in (stdout, stderr):
+        if output:
+            stripped = output.strip()
+            if stripped:
+                parts.append(stripped)
+    return " | ".join(parts)
 
 
 def _platform_arch_in_name(name: str, platform_key: str, arch_key: str) -> bool:

@@ -1,36 +1,24 @@
-from pathlib import Path
-import os
+# 本地运行时实际使用的配置（勿提交到版本库）
 
+# 星耀数智服务账号密码
+AMAZING_USERNAME = "211600011531"
+AMAZING_PASSWORD = "211600011531@2025"
+AMAZING_HOST = "140.206.44.234"
+AMAZING_PORT = 8600
 
-def _load_dotenv() -> None:
-    env_path = Path(__file__).with_name(".env")
-    if not env_path.exists():
-        return
+# NATS
+NATS_PRODUCER_URL = "nats://127.0.0.1:4222"       # 生产方连接地址（tick producer 推送用）
+NATS_CONSUMER_URL = "nats://127.0.0.1:4222"       # 消费方连接地址（tick consumer 订阅用）
+NATS_AM_SUBJECT = "market.tick.amazing"           # Amazing 行情 subject
+NATS_XT_SUBJECT = "market.tick.xtquant"           # xtquant 行情 subject
 
-    for line in env_path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
+# xt producer：一条 NATS 消息里最多几个 code 的 quote（控制单包大小，避免 max_payload）
+NATS_XT_QUOTES_PER_MESSAGE = 1000
 
-        key, value = line.split("=", 1)
-        key = key.strip()
-        value = value.strip().strip("'\"")
+# NatsThreadedProducer 发送侧参数（amazing / xt 共用）
+NATS_BATCH_SIZE = 1000                            # 后台线程每轮最多连续 publish 几条「NATS 消息」再 flush；不是 xt 每包 code 数
+NATS_FLUSH_INTERVAL = 0.02                        # 队列空时，发送线程休眠秒数（降低空转 CPU）
+NATS_MAX_QUEUE_SIZE = 100000                      # 待发送队列上限；满则 push 失败并计 dropped
 
-        if key and key not in os.environ:
-            os.environ[key] = value
-
-
-def _required_env(name: str) -> str:
-    value = os.getenv(name)
-    if value:
-        return value
-
-    raise RuntimeError(f"Missing required environment variable: {name}")
-
-
-_load_dotenv()
-
-AMAZING_USERNAME = _required_env("AMAZING_USERNAME")
-AMAZING_PASSWORD = _required_env("AMAZING_PASSWORD")
-AMAZING_HOST = _required_env("AMAZING_HOST")
-AMAZING_PORT = int(os.getenv("AMAZING_PORT", "8600"))
+# nats-server 监听地址（data/job_nats_service.py）
+NATS_BIND_ADDR = "0.0.0.0"

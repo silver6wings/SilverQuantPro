@@ -53,7 +53,7 @@ callback 编写原则
 import logging
 from pathlib import Path
 
-from data.tick.amazing_nats_consumer import AmazingNatsConsumer
+from data.tick.amazing.nats_consumer import AmazingNatsConsumer
 
 _LOG_LEVEL = logging.DEBUG
 _LOG_PATH = Path("_cache/demo_consumer.log")
@@ -101,8 +101,9 @@ def main() -> None:
 
 
 def callback_sub_whole(quotes: dict) -> None:
-    sample_codes = list(quotes.keys())[:5]
-    print(datetime.datetime.now(), f"quotes={len(quotes)}", f"sample={sample_codes}")
+    print(datetime.datetime.now(), f"quotes: {len(quotes)}")
+    for code in quotes:
+        print(code, quotes[code])
 
 
 if __name__ == "__main__":

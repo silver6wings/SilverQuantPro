@@ -1,53 +1,43 @@
-import asyncio
 import time
 
-from data.nats.nats_producer import NatsProducer, NatsThreadedProducer
+from credentials import NATS_AM_SUBJECT
+from data.base.base_producer import BaseProducer
+from data.nats.nats_producer import NatsProducer
+from data.tick.tick_quote import TickPayload, build_tick_quote
+
+_DEMO_CODE = "000001.SZ"
 
 
-async def main() -> None:
-    producer = NatsProducer()
+def main() -> None:
+    producer: BaseProducer = NatsProducer()
+    index = 0
 
-    payload = {
-        "ts_event": time.time_ns(),
-        "source": "demo",
-        "symbol": "000001.SZ",
-        "price": 11.07,
-        "volume": 1000,
-    }
+    try:
+        while True:
+            last_price = round(11.07 + index * 0.01, 2)
+            payload: TickPayload = {
+                _DEMO_CODE: build_tick_quote(
+                    timestamp=int(time.time() * 1000),
+                    last_close=11.06,
+                    open=11.07,
+                    high=last_price,
+                    low=11.06,
+                    last_price=last_price,
+                    volume=1000 + index,
+                    amount=round(last_price * (1000 + index), 2),
+                ),
+            }
+            producer.push(NATS_AM_SUBJECT, payload)
+            print(f"published to {NATS_AM_SUBJECT}: {payload}")
 
-    await producer.push(payload, flush=True)
-    print(f"published to {producer.nats_subject}: {payload}")
-
-    await producer.close()
-
-
-def demo_nats_producer():
-    asyncio.run(main())
-
-
-def demo_nats_threaded_producer() -> None:
-    producer = NatsThreadedProducer()
-    producer.start()
-
-    payload = {
-        "ts_event": time.time_ns(),
-        "source": "demo",
-        "symbol": "000001.SZ",
-        "price": 11.07,
-        "volume": 1000,
-    }
-
-    ok = producer.push(payload, block=True, timeout=1.0)
-    if not ok:
-        print("queue full, failed to enqueue demo payload")
+            index += 1
+            time.sleep(1)
+    finally:
         producer.close()
-        return
-
-    print(f"enqueued for {producer.nats_subject}: {payload}")
-    producer.close()
-    print(f"published to {producer.nats_subject}: {payload}")
 
 
 if __name__ == "__main__":
-    demo_nats_producer()
-    demo_nats_threaded_producer()
+    try:
+        main()
+    except KeyboardInterrupt:
+        pass

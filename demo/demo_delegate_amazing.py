@@ -1,11 +1,11 @@
 import datetime
 
+from data.tick.tick_quote import TickPayload
 from delegate.amazing_delegate import AmazingDelegate
-from delegate.amazing_snapshot import Quote
 from delegate.amazing_subscriber import AmazingSubscriber
 
 
-def callback(payload: Quote) -> None:
+def callback(payload: TickPayload) -> None:
     print(f"{datetime.datetime.now()} {payload}\n", end="")
 
 

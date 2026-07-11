@@ -4,17 +4,16 @@ import pandas as pd
 from decimal import Decimal, ROUND_HALF_UP
 
 
-IS_DEBUG = False
-
-
 def debug(*args, **kwargs):
-    if IS_DEBUG:
+    # 防御：某些脚本可能未定义 IS_DEBUG，此时默认视为 False
+    if globals().get("IS_DEBUG", False):
         print(*args, **kwargs)
 
 
 # pandas dataframe 显示配置优化
 def pd_show_all() -> None:
-    pd.set_option('display.width', None)
+    pd.set_option('display.expand_frame_repr', False)
+    pd.set_option('display.width', 2000)
     pd.set_option('display.min_rows', 9999)
     pd.set_option('display.max_rows', 9999)
     pd.set_option('display.max_columns', 200)
@@ -24,15 +23,42 @@ def pd_show_all() -> None:
 
 
 # logging 模块的初始化配置
-def logging_init(path=None, level=logging.DEBUG, file_line=False):
+def logging_init(path=None, level=logging.DEBUG, file_line=False, silence_libs=True):
+    """
+    初始化日志配置
+    :param path: 日志文件路径，None则输出到控制台
+    :param level: 日志级别
+    :param file_line: 是否显示文件名和行号
+    :param silence_libs: 是否静默第三方库日志
+    """
     file_line_fmt = ""
     if file_line:
         file_line_fmt = "%(filename)s[line:%(lineno)d] - %(levelname)s: "
+
     logging.basicConfig(
         level=level,
         format=file_line_fmt + "%(asctime)s|%(message)s",
         filename=path
     )
+
+    # 静默常见第三方库的日志（完全忽略）
+    if silence_libs:
+        noisy_libs = [
+            'gmtrade', 'gmtradelogger', 'tushare', 'urllib3', 'requests',
+            'httpx', 'httpcore', 'asyncio', 'websockets',
+            'apscheduler', 'schedule', 'chardet',
+        ]
+        # 既设置顶层 logger，也把已创建的同前缀子 logger 一并静默（例如 gmtrade.xxx）
+        for lib in noisy_libs:
+            logging.getLogger(lib).setLevel(logging.CRITICAL)
+            logging.getLogger(lib).propagate = False
+
+            for name, obj in logging.root.manager.loggerDict.items():
+                if not isinstance(obj, logging.Logger):
+                    continue
+                if name == lib or name.startswith(lib + '.'):
+                    obj.setLevel(logging.CRITICAL)  # 只输出崩溃级日志
+                    obj.propagate = False  # 阻止传播到 root logger
 
 
 # 多文件 logger的配置
@@ -64,7 +90,7 @@ def symbol_to_code(symbol: str | int) -> str:
 
     if symbol[:2] in ['00', '30', '15', '12']:
         return f'{symbol}.SZ'
-    elif symbol[:2] in ['60', '68', '51', '52', '53', '56', '58', '11']:
+    elif symbol[:2] in ['60', '68', '51', '52', '53', '55', '56', '58', '11']:
         return f'{symbol}.SH'
     elif symbol[:2] in ['83', '87', '43', '82', '88', '92']:
         return f'{symbol}.BJ'
@@ -162,7 +188,7 @@ def symbol_to_gmsymbol(symbol: str | int) -> str:
 
     if symbol[:2] in ['00', '30', '15', '12']:
         return f'SZSE.{symbol}'
-    elif symbol[:2] in ['60', '68', '51', '52', '53', '56', '58', '11']:
+    elif symbol[:2] in ['60', '68', '51', '52', '53', '55', '56', '58', '11']:
         return f'SHSE.{symbol}'
     elif symbol[:2] in ['83', '87', '43', '82', '88', '92']:
         return f'BJSE.{symbol}'
@@ -187,18 +213,25 @@ def gmsymbol_to_code(gmsymbol: str) -> str:
 # 判断是不是可交易股票代码 包含 股票 ETF 可转债
 def is_symbol(code_or_symbol: str):
     return code_or_symbol[:2] in [
-        '00', '30',  # 深交所
-        '60', '68',  # 上交所
-        '82', '83', '87', '88', '43', '92',  # 北交所
-        '15', '51', '52', '53', '56', '58',  # ETF
-        '11', '12',  # 可转债
+        '00', '30',                                 # 深交所
+        '60', '68',                                 # 上交所
+        '82', '83', '87', '88', '43', '92',         # 北交所
+        '15', '51', '52', '53', '55', '56', '58',   # ETF
+        '11', '12',                                 # 可转债
     ]
 
 
 def is_stock(code_or_symbol: str | int):
-    """ 判断是不是股票代码 """
     code_or_symbol = str(code_or_symbol) if type(code_or_symbol) == int else code_or_symbol
     return code_or_symbol[:2] in ['00', '30', '60', '68', '82', '83', '87', '88', '43', '92']
+
+
+def is_stock_code(code: str):
+    """ 判断是不是股票代码 """
+    ex = code.split('.')[1]
+    if ex == 'SH' and code[:2] in ['00']:
+        return False
+    return code[:2] in ['00', '30', '60', '68', '82', '83', '87', '88', '43', '92']
 
 
 def is_stock_10cm(code_or_symbol: str | int):
@@ -240,7 +273,7 @@ def is_stock_bj(code_or_symbol: str | int):
 def is_fund_etf(code_or_symbol: str | int):
     """ 判断是不是etf代码 """
     code_or_symbol = str(code_or_symbol) if type(code_or_symbol) == int else code_or_symbol
-    return code_or_symbol[:2] in ['15', '51', '52', '53', '56', '58']
+    return code_or_symbol[:2] in ['15', '51', '52', '53', '55', '56', '58']
 
 
 def is_bond(code_or_symbol: str | int):
@@ -253,7 +286,7 @@ def is_bond(code_or_symbol: str | int):
 def get_symbol_exchange(symbol: str) -> str:
     if symbol[:2] in ['00', '30', '15', '12']:
         return 'SZ'
-    elif symbol[:2] in ['60', '68', '51', '52', '53', '56', '58', '11']:
+    elif symbol[:2] in ['60', '68', '51', '52', '53', '55', '56', '58', '11']:
         return 'SH'
     elif symbol[:2] in ['83', '87', '43', '82', '88', '92']:
         return 'BJ'
@@ -279,6 +312,11 @@ def map_num_to_chr(num):
         return chr(quotient - 36 + 65)  # 将数字转换为大写字母
     else:
         return '.'
+
+
+def is_in_continuous_auction(curr_time: str) -> bool:
+    """当前时刻是否处于沪深连续竞价（curr_time 为 HH:MM[:SS] 等可与字符串区间比较的时间串）。"""
+    return ('09:30' <= curr_time <= '11:30') or ('13:00' <= curr_time <= '14:57')
 
 
 # 获取当前时间在一天连续竞价交易时间的百分位

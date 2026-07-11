@@ -3,17 +3,17 @@
 
 用法
 ----
-    PYTHONPATH=. python data/nats_service.py
-    PYTHONPATH=. python data/nats_service.py kill
-    PYTHONPATH=. python data/nats_service.py kill --port 4222
+    PYTHONPATH=. python data/job_nats_service.py
+    PYTHONPATH=. python data/job_nats_service.py kill
+    PYTHONPATH=. python data/job_nats_service.py kill --port 4222
 """
 import argparse
 import logging
 import time
 
-from data.nats.service_manager import (
+from data.nats.nats_service import (
     DEFAULT_NATS_URL,
-    NatsServiceManager,
+    NatsService,
     detect_runtime,
     find_pids_on_port,
     kill_processes_on_port,
@@ -28,13 +28,19 @@ def run_start() -> None:
     print(f"runtime={runtime.label}")
     print(f"binary={binary}")
 
-    with NatsServiceManager() as manager:
-        print(f"nats-server running on port {manager.port} (pid={manager.pid}), press Ctrl+C to stop")
-        try:
-            while manager.is_running():
-                time.sleep(1)
-        except KeyboardInterrupt:
-            pass
+    try:
+        with NatsService() as service:
+            print(f"nats-server running on port {service.port} (pid={service.pid}), press Ctrl+C to stop")
+            try:
+                while service.is_active():
+                    time.sleep(1)
+            except KeyboardInterrupt:
+                pass
+    except RuntimeError as exc:
+        port = parse_nats_port(DEFAULT_NATS_URL)
+        raise SystemExit(
+            f"{exc}\nrun `python data/job_nats_service.py kill --port {port}` first"
+        ) from exc
 
 
 def run_kill(port: int) -> None:

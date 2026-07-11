@@ -1,5 +1,5 @@
 """
-AmazingData 行情订阅：在独立线程中运行 SubscribeData，将 snapshot 转为 QMT quote 后回调。
+AmazingData 行情订阅：在独立线程中运行 SubscribeData，将 snapshot 转为统一 tick quote 后回调。
 
 会话由 AmazingDelegate 单例管理：进程启动时 login，进程退出时 logout。
 stop_sub 仅停止 callback，不调用 logout；订阅线程可能仍阻塞在 sub_data.run()，
@@ -11,11 +11,12 @@ from typing import Any, Callable
 
 import AmazingData as ad
 from delegate.amazing_delegate import AmazingDelegate
-from delegate.amazing_snapshot import Quote, Snapshot, snapshot_to_qmt_quote
+from data.tick.amazing.tick_adapter import Snapshot, snapshot_to_tick_payload
+from data.tick.tick_quote import TickPayload
 
 logger = logging.getLogger(__name__)
 
-QuoteCallback = Callable[[Quote], None]
+QuoteCallback = Callable[[TickPayload], None]
 
 
 class AmazingSubscriber:
@@ -64,17 +65,17 @@ class AmazingSubscriber:
             if self._thread is None:
                 return
             try:
-                quote = snapshot_to_qmt_quote(data)
+                payload = snapshot_to_tick_payload(data)
             except Exception:
                 code = getattr(data, "code", type(data).__name__)
                 logger.critical(
-                    "failed to convert snapshot to qmt quote: code=%s",
+                    "failed to convert snapshot to tick quote: code=%s",
                     code,
                     exc_info=True,
                 )
                 return
             try:
-                callback(quote)
+                callback(payload)
             except Exception:
                 code = getattr(data, "code", type(data).__name__)
                 logger.exception("snapshot callback failed: code=%s", code)
