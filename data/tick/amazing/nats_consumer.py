@@ -141,6 +141,10 @@ class AmazingNatsConsumer:
         logger.info("quote subscription stopped, quote_count=%d", self.quote_count)
         return _SUB_OK
 
+    def update_code_list(self, code_list: list[str]) -> None:
+        with self._lock:
+            self._code_list = frozenset(code_list)
+
     def wait(self) -> None:
         """阻塞主线程，直到 runner 线程结束。
 

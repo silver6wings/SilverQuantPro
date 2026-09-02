@@ -6,12 +6,12 @@ import logging
 from credentials import NATS_AM_SUBJECT, NATS_BATCH_SIZE, NATS_FLUSH_INTERVAL, NATS_MAX_QUEUE_SIZE, NATS_PRODUCER_URL
 from data.nats.nats_producer import NatsThreadedProducer
 from data.tick.tick_quote import TickPayload
-from delegate.amazing_delegate import AmazingDelegate
-from delegate.amazing_subscriber import AmazingSubscriber
+from delegate.amazing_delegate import AmazingDelegate, AmazingSubscriber
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_CODE_LIST = ["000001.SZ", "600000.SH"]
+_DEFAULT_PUSH_STATS_LOG_STEP = 5000
 
 
 class AmazingNatsProducer:
@@ -22,6 +22,7 @@ class AmazingNatsProducer:
         batch_size: int = NATS_BATCH_SIZE,
         flush_interval: float = NATS_FLUSH_INTERVAL,
         max_queue_size: int = NATS_MAX_QUEUE_SIZE,
+        push_stats_log_step: int = _DEFAULT_PUSH_STATS_LOG_STEP,
     ) -> None:
         self.nats_producer = NatsThreadedProducer(
             nats_url=nats_url,
@@ -31,8 +32,10 @@ class AmazingNatsProducer:
             max_queue_size=max_queue_size,
         )
         self.amazing_subscriber = None
+        self.push_stats_log_step = push_stats_log_step
         self.pushed_count = 0
         self.dropped_count = 0
+        self._push_stats_log_milestone = 0
         self.code_list: list[str] = list(_DEFAULT_CODE_LIST)
         self._running = False
 
@@ -67,6 +70,7 @@ class AmazingNatsProducer:
         self.amazing_subscriber = None
         self.nats_producer.close()
         self._running = False
+        self._log_push_stats(final=True)
 
     def run(self) -> None:
         self.start()
@@ -84,6 +88,19 @@ class AmazingNatsProducer:
         else:
             self.dropped_count += 1
 
+        self._log_push_stats()
+
+    def _log_push_stats(self, *, final: bool = False) -> None:
         total_count = self.pushed_count + self.dropped_count
-        if total_count % 5000 == 0:
+        if not total_count:
+            return
+
+        milestone = total_count // self.push_stats_log_step
+        if final:
+            if total_count > self._push_stats_log_milestone * self.push_stats_log_step:
+                logger.info("nats pushed=%d, dropped=%d", self.pushed_count, self.dropped_count)
+            return
+
+        if milestone > self._push_stats_log_milestone:
+            self._push_stats_log_milestone = milestone
             logger.info("nats pushed=%d, dropped=%d", self.pushed_count, self.dropped_count)

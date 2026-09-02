@@ -2,7 +2,7 @@ import datetime
 
 from data.tick.tick_quote import TickPayload
 from delegate.amazing_delegate import AmazingDelegate
-from delegate.amazing_subscriber import AmazingSubscriber
+from tools.utils_remote_am import AmazingSecurityType
 
 
 def callback(payload: TickPayload) -> None:
@@ -10,15 +10,9 @@ def callback(payload: TickPayload) -> None:
 
 
 def demo() -> None:
-    delegate = AmazingDelegate()
-    subscriber = AmazingSubscriber(delegate)
-    subscriber.start_sub(callback=callback)
-    try:
-        subscriber.wait()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        subscriber.stop_sub()
+    security_type = AmazingSecurityType.HS_ETF
+    codes = AmazingDelegate.get_codes(security_type)
+    print(f"{security_type}: {len(codes)}")
 
 
 if __name__ == "__main__":

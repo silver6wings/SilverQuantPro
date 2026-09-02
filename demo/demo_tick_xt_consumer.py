@@ -1,9 +1,10 @@
 """
-miniQMT xtdata 消费端 demo（原生 subscribe_whole_quote）。
+Xtquant NATS 消费端 demo。
 
 前置条件
 --------
-- 本机已安装并登录 miniQMT，行情服务可用。
+- NATS 已启动，subject 与 credentials 中 NATS_XT_SUBJECT 一致。
+- demo_tick_xt_producer.py（或 job_tick_xtquant.py）正在推送行情。
 
 用法
 ----
@@ -11,12 +12,9 @@ miniQMT xtdata 消费端 demo（原生 subscribe_whole_quote）。
 """
 import datetime
 import logging
-import time
 from pathlib import Path
 
-from xtquant import xtdata
-
-xtdata.enable_hello = False
+from data.tick.xtquant.nats_consumer import XtquantNatsConsumer
 
 _LOG_PATH = Path("_cache/demo_xt_consumer.log")
 
@@ -57,19 +55,18 @@ def main() -> None:
     setup_logging()
     logger = logging.getLogger(__name__)
 
-    seq = xtdata.subscribe_whole_quote(DEMO_CODE_LIST, callback=callback_sub_whole)
-    if seq < 0:
+    consumer = XtquantNatsConsumer(interval=1.0)
+    if consumer.subscribe_whole_quote(DEMO_CODE_LIST, callback=callback_sub_whole) != 0:
         raise RuntimeError("subscribe failed")
 
-    logger.info("subscribed %d codes, seq=%s", len(DEMO_CODE_LIST), seq)
+    logger.info("subscribed %d codes via NATS", len(DEMO_CODE_LIST))
     try:
-        while True:
-            time.sleep(1)
+        consumer.wait()
     except KeyboardInterrupt:
         pass
     finally:
-        xtdata.unsubscribe_quote(seq)
-        logger.info("unsubscribed seq=%s", seq)
+        consumer.unsubscribe_quote()
+        logger.info("unsubscribed, quote_count=%d", consumer.quote_count)
 
 
 if __name__ == "__main__":

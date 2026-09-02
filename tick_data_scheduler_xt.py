@@ -1,15 +1,15 @@
 """
-Amazing 行情生产调度器：常驻运行，管理 NATS 与 tick producer 子进程。
+Xtquant 行情生产调度器：常驻运行，管理 NATS 与 tick producer 子进程。
 
  - 启动时：拉起 data/job_nats_service.py
-- 每个交易日 09:01：启动 data/job_tick_amazing.py（调度器若在 09:01~09:46 之间启动，会立即拉起 producer）
-- 每个交易日 09:46：停止 producer（SIGTERM）
+- 每个交易日在 PRODUCER_WINDOWS 时段内运行 data/job_tick_xtquant.py（午休停推以节约资源）
+- 调度器启动时若已在窗口内，会立即拉起 producer
 - 非交易日不启动 producer
 - 子进程 stdout/stderr 带前缀打印到本进程控制台
 
 用法
 ----
-    PYTHONPATH=. python tick_am_scheduler.py
+    PYTHONPATH=. python tick_data_scheduler_xt.py
 
 Ctrl+C 停止调度器，并依次终止 producer 与 nats 子进程。
 """
@@ -24,49 +24,33 @@ from datetime import date, datetime
 from pathlib import Path
 
 from data.nats.nats_service import find_pids_on_port, is_nats_server_pid
-from tools.utils_remote_am import AmazingSecurityType, check_is_open_day
+from framework.tick_subscriber import DEFAULT_QUOTE_WINDOWS, in_quote_windows
+from tools.utils_remote_am import check_is_open_day
+from tools.utils_remote_xt import XtSectorType
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 NATS_SCRIPT = PROJECT_ROOT / "data" / "job_nats_service.py"
-PRODUCER_SCRIPT = PROJECT_ROOT / "data" / "job_tick_amazing.py"
+PRODUCER_SCRIPT = PROJECT_ROOT / "data" / "job_tick_xtquant.py"
 NATS_PORT = 4222
 
-PRODUCER_START_HOUR = 13
-PRODUCER_START_MINUTE = 14
-PRODUCER_STOP_HOUR = 17
-PRODUCER_STOP_MINUTE = 1
+PRODUCER_WINDOWS = DEFAULT_QUOTE_WINDOWS
 
-PRODUCER_SECURITY_TYPES = (
-    # AmazingSecurityType.SZ_STOCK,
-    # AmazingSecurityType.SH_STOCK,
-    AmazingSecurityType.SZ_INDEX,
-    AmazingSecurityType.SH_INDEX,
+PRODUCER_SECTORS = (
+    XtSectorType.SZ_STOCK,
+    XtSectorType.SH_STOCK,
 )
 
 STOP_TIMEOUT_SEC = 30.0
 TICK_SEC = 1.0
 
 
-def _minutes_of_day(hour: int, minute: int) -> int:
-    return hour * 60 + minute
-
-
-PRODUCER_WINDOW_START = _minutes_of_day(PRODUCER_START_HOUR, PRODUCER_START_MINUTE)
-PRODUCER_WINDOW_STOP = _minutes_of_day(PRODUCER_STOP_HOUR, PRODUCER_STOP_MINUTE)
-
-
-def _now_minutes(now: datetime) -> int:
-    return _minutes_of_day(now.hour, now.minute)
-
-
-def _in_producer_window(now: datetime) -> bool:
-    current = _now_minutes(now)
-    return PRODUCER_WINDOW_START <= current < PRODUCER_WINDOW_STOP
+def _format_producer_windows() -> str:
+    return ", ".join(f"[{start}, {stop})" for start, stop in PRODUCER_WINDOWS)
 
 
 def _log(message: str) -> None:
     stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[am-scheduler {stamp}] {message}", flush=True)
+    print(f"[xt-scheduler {stamp}] {message}", flush=True)
 
 
 def _is_trading_day(day: date) -> bool:
@@ -176,11 +160,9 @@ class ProducerScheduler:
             "producer",
             PRODUCER_SCRIPT,
             extra_env={
-                "AM_SUBSCRIBE_SECURITY_TYPES": ",".join(PRODUCER_SECURITY_TYPES),
+                "XT_SUBSCRIBE_SECTORS": ",".join(PRODUCER_SECTORS),
             },
         )
-        self._last_start_date: date | None = None
-        self._last_stop_date: date | None = None
         self._trading_day_checked: date | None = None
         self._trading_day_open = False
         self._using_external_nats = False
@@ -207,12 +189,10 @@ class ProducerScheduler:
             time.sleep(2.0)
 
         _log(
-            f"ready; producer schedule "
-            f"{PRODUCER_START_HOUR:02d}:{PRODUCER_START_MINUTE:02d} start, "
-            f"{PRODUCER_STOP_HOUR:02d}:{PRODUCER_STOP_MINUTE:02d} stop, "
-            f"security_types={','.join(PRODUCER_SECURITY_TYPES)}"
+            f"ready; producer windows {_format_producer_windows()}, "
+            f"sectors={','.join(PRODUCER_SECTORS)}"
         )
-        self._maybe_start_producer_on_startup()
+        self._sync_producer(datetime.now())
 
         try:
             while self._running:
@@ -235,36 +215,17 @@ class ProducerScheduler:
         _log(f"received signal {signum}")
         self._running = False
 
-    def _maybe_start_producer_on_startup(self) -> None:
-        now = datetime.now()
-        if not _in_producer_window(now):
-            return
-        if not self._is_trading_day_cached(now.date()):
-            _log("within producer window but not a trading day, producer not started")
-            return
-        if self.producer.is_running():
-            return
-        _log("within producer window on trading day, starting producer on startup")
-        self.producer.start()
-        self._last_start_date = now.date()
+    def _sync_producer(self, now: datetime) -> None:
+        trading = self._is_trading_day_cached(now.date())
+        in_window = trading and in_quote_windows(now)
 
-    def _try_start_producer(self, now: datetime) -> None:
-        today = now.date()
-        scheduled = (
-            now.hour == PRODUCER_START_HOUR
-            and now.minute == PRODUCER_START_MINUTE
-            and self._last_start_date != today
-        )
-        if not scheduled:
-            return
-        self._last_start_date = today
-        if not self._is_trading_day_cached(today):
-            _log("producer start skipped, not a trading day")
-            return
-        if not self.producer.is_running():
+        if in_window and not self.producer.is_running():
+            _log("entering producer window, starting producer")
             self.producer.start()
-        else:
-            _log("producer start skipped, already running")
+        elif not in_window and self.producer.is_running():
+            reason = "outside producer window" if trading else "not a trading day"
+            _log(f"{reason}, stopping producer")
+            self.producer.stop()
 
     def _tick(self) -> None:
         if self._using_external_nats:
@@ -285,21 +246,7 @@ class ProducerScheduler:
             self.nats.start()
             time.sleep(2.0)
 
-        now = datetime.now()
-        today = now.date()
-
-        self._try_start_producer(now)
-
-        if (
-            now.hour == PRODUCER_STOP_HOUR
-            and now.minute == PRODUCER_STOP_MINUTE
-            and self._last_stop_date != today
-        ):
-            self._last_stop_date = today
-            if self.producer.is_running():
-                self.producer.stop()
-            else:
-                _log("producer stop skipped, not running")
+        self._sync_producer(datetime.now())
 
 
 def main() -> None:

@@ -1,38 +1,43 @@
 """
-miniQMT xtdata 生产端 demo（原生 subscribe_whole_quote，默认订阅上证/深证 A 股）。
+Xtquant NATS 生产端 demo。
 
 前置条件
 --------
 - 本机已安装并登录 miniQMT，行情服务可用。
+- NATS 已启动（如 `PYTHONPATH=. python data/job_nats_service.py`）。
 
 用法
 ----
     PYTHONPATH=. python demo/demo_tick_xt_producer.py
+
+在 main() 里改 CODE_LIST 或 SECTORS 即可自定义订阅范围。
 """
 import logging
-import time
 from pathlib import Path
 
+from data.tick.xtquant.nats_producer import XtquantNatsProducer
 from delegate.xtdata_delegate import XtdataDelegate
 from tools.utils_remote_xt import XtSectorType
-from xtquant import xtdata
-
-xtdata.enable_hello = False
 
 _LOG_PATH = Path("_cache/demo_xt_producer.log")
 
-_DEFAULT_SECTORS = (
+# 直接指定 code 列表；非空时优先使用，忽略 SECTORS
+CODE_LIST: list[str] = []
+
+# CODE_LIST 为空时，按板块拉取 code
+SECTORS: list[str] = [
     XtSectorType.SZ_STOCK,
     XtSectorType.SH_STOCK,
-)
-
-_tick_count = 0
+    # XtSectorType.HS_INDEX,
+    # XtSectorType.HS_ETF,
+    # XtSectorType.HS_KZZ,
+]
 
 
 def setup_logging() -> None:
     _LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
-        level=logging.DEBUG,
+        level=logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
         handlers=[
             logging.StreamHandler(),
@@ -42,39 +47,25 @@ def setup_logging() -> None:
     )
 
 
-def callback_on_tick(quotes: dict) -> None:
-    global _tick_count
-    logger = logging.getLogger(__name__)
-    _tick_count += len(quotes)
-    for code, quote in quotes.items():
-        logger.debug("%s %s", code, quote)
+def _load_code_list() -> list[str]:
+    if CODE_LIST:
+        return list(CODE_LIST)
+
+    code_list = XtdataDelegate.get_code_list(SECTORS)
+    print(f"Total codes={len(code_list)}", code_list[:10], "...")
+    return code_list
 
 
 def main() -> None:
     setup_logging()
     logger = logging.getLogger(__name__)
 
-    code_list = XtdataDelegate.get_code_list(list(_DEFAULT_SECTORS))
-    logger.info(
-        "loaded %d codes from %s",
-        len(code_list),
-        ", ".join(_DEFAULT_SECTORS),
-    )
-    print(len(code_list), code_list[:10], "...")
+    code_list = _load_code_list()
+    logger.info("subscribing %d codes from %s", len(code_list), SECTORS if not CODE_LIST else "CODE_LIST")
 
-    seq = xtdata.subscribe_whole_quote(code_list, callback=callback_on_tick)
-    if seq < 0:
-        raise RuntimeError("subscribe failed")
-
-    logger.info("subscribed, seq=%s", seq)
-    try:
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        xtdata.unsubscribe_quote(seq)
-        logger.info("unsubscribed seq=%s, tick_count=%d", seq, _tick_count)
+    producer = XtquantNatsProducer()
+    producer.set_code_list(code_list)
+    producer.run()
 
 
 if __name__ == "__main__":

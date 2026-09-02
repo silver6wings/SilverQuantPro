@@ -25,6 +25,7 @@ from data.tick.xtquant.tick_adapter import quote_to_tick_payload
 logger = logging.getLogger(__name__)
 
 _DEFAULT_CODE_LIST = ["000001.SZ", "600000.SH"]
+_DEFAULT_PUSH_STATS_LOG_STEP = 5000
 
 
 class XtquantNatsProducer:
@@ -36,6 +37,7 @@ class XtquantNatsProducer:
         flush_interval: float = NATS_FLUSH_INTERVAL,
         max_queue_size: int = NATS_MAX_QUEUE_SIZE,
         quotes_per_message: int = NATS_XT_QUOTES_PER_MESSAGE,
+        push_stats_log_step: int = _DEFAULT_PUSH_STATS_LOG_STEP,
     ) -> None:
         self.nats_producer = NatsThreadedProducer(
             nats_url=nats_url,
@@ -45,9 +47,11 @@ class XtquantNatsProducer:
             max_queue_size=max_queue_size,
         )
         self.quotes_per_message = quotes_per_message
+        self.push_stats_log_step = push_stats_log_step
         self.sub_sequence: int | None = None
         self.pushed_count = 0
         self.dropped_count = 0
+        self._push_stats_log_milestone = 0
         self.code_list: list[str] = list(_DEFAULT_CODE_LIST)
         self._running = False
 
@@ -81,6 +85,7 @@ class XtquantNatsProducer:
 
         self.nats_producer.close()
         self._running = False
+        self._log_push_stats(final=True)
 
     def run(self) -> None:
         self.start()
@@ -116,11 +121,24 @@ class XtquantNatsProducer:
             if batch:
                 self._push_batch(batch)
 
-            total_count = self.pushed_count + self.dropped_count
-            if total_count and total_count % 5000 == 0:
-                logger.info("nats pushed=%d, dropped=%d", self.pushed_count, self.dropped_count)
+            self._log_push_stats()
         except Exception:
             logger.exception("on_quotes failed")
+
+    def _log_push_stats(self, *, final: bool = False) -> None:
+        total_count = self.pushed_count + self.dropped_count
+        if not total_count:
+            return
+
+        milestone = total_count // self.push_stats_log_step
+        if final:
+            if total_count > self._push_stats_log_milestone * self.push_stats_log_step:
+                logger.info("nats pushed=%d, dropped=%d", self.pushed_count, self.dropped_count)
+            return
+
+        if milestone > self._push_stats_log_milestone:
+            self._push_stats_log_milestone = milestone
+            logger.info("nats pushed=%d, dropped=%d", self.pushed_count, self.dropped_count)
 
     def _push_batch(self, batch: TickPayload) -> None:
         if self.nats_producer.push(batch):
