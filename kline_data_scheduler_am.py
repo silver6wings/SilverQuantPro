@@ -1,15 +1,14 @@
 """
-Amazing 行情生产调度器：常驻运行，管理 NATS 与 tick producer 子进程。
+Amazing K 线生产调度器：常驻运行，管理 NATS 与 kline producer 子进程。
 
- - 启动时：拉起 data/job_nats_service.py
-- 每个交易日在 PRODUCER_TRADING_SESSION_WINDOWS 时段内运行 data/job_tick_amazing.py（午休停推以节约资源）
+- 启动时：拉起 data/job_nats_service.py（若本机 4222 尚无 nats-server）
+- 每个交易日在 AM_KLINE_TRADING_SESSION_WINDOWS 时段内运行 data/job_kline_amazing.py
 - 调度器启动时若已在窗口内，会立即拉起 producer
 - 非交易日不启动 producer
-- 子进程 stdout/stderr 带前缀打印到本进程控制台
 
 用法
 ----
-    PYTHONPATH=. python tick_data_scheduler_am.py
+    PYTHONPATH=. python kline_data_scheduler_am.py
 
 Ctrl+C 停止调度器，并依次终止 producer 与 nats 子进程。
 """
@@ -23,36 +22,34 @@ import time
 from datetime import date, datetime
 from pathlib import Path
 
+from data.kline.kline_entity import KlinePeriodName
 from data.nats.nats_service import find_pids_on_port, is_nats_server_pid
-from framework.trading_session import DEFAULT_TRADING_SESSION_WINDOWS, in_trading_session
+from framework.trading_session import AM_KLINE_TRADING_SESSION_WINDOWS, in_trading_session
 from tools.utils_remote_am import AmazingSecurityType, check_is_open_day
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 NATS_SCRIPT = PROJECT_ROOT / "data" / "job_nats_service.py"
-PRODUCER_SCRIPT = PROJECT_ROOT / "data" / "job_tick_amazing.py"
+PRODUCER_SCRIPT = PROJECT_ROOT / "data" / "job_kline_amazing.py"
 NATS_PORT = 4222
-
-PRODUCER_TRADING_SESSION_WINDOWS = DEFAULT_TRADING_SESSION_WINDOWS
 
 PRODUCER_SECURITY_TYPES = (
     AmazingSecurityType.SZ_STOCK,
     AmazingSecurityType.SH_STOCK,
-    # AmazingSecurityType.SZ_INDEX,
-    # AmazingSecurityType.SH_INDEX,
-    # AmazingSecurityType.HS_ETF,
 )
+
+KLINE_PERIOD = KlinePeriodName.MIN5
 
 STOP_TIMEOUT_SEC = 30.0
 SCHEDULER_POLL_SEC = 1.0
 
 
 def _format_producer_session_windows() -> str:
-    return ", ".join(f"[{start}, {stop})" for start, stop in PRODUCER_TRADING_SESSION_WINDOWS)
+    return ", ".join(f"[{start}, {stop})" for start, stop in AM_KLINE_TRADING_SESSION_WINDOWS)
 
 
 def _log(message: str) -> None:
     stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[am-scheduler {stamp}] {message}", flush=True)
+    print(f"[am-kline-scheduler {stamp}] {message}", flush=True)
 
 
 def _is_trading_day(day: date) -> bool:
@@ -163,6 +160,7 @@ class ProducerScheduler:
             PRODUCER_SCRIPT,
             extra_env={
                 "AM_SUBSCRIBE_SECURITY_TYPES": ",".join(PRODUCER_SECURITY_TYPES),
+                "KLINE_PERIOD": KLINE_PERIOD.value,
             },
         )
         self._trading_day_checked: date | None = None
@@ -192,6 +190,7 @@ class ProducerScheduler:
 
         _log(
             f"ready; producer session {_format_producer_session_windows()}, "
+            f"period={KLINE_PERIOD.value}, "
             f"security_types={','.join(PRODUCER_SECURITY_TYPES)}"
         )
         self._sync_producer(datetime.now())
@@ -219,7 +218,7 @@ class ProducerScheduler:
 
     def _sync_producer(self, now: datetime) -> None:
         trading = self._is_trading_day_cached(now.date())
-        in_window = trading and in_trading_session(now, PRODUCER_TRADING_SESSION_WINDOWS)
+        in_window = trading and in_trading_session(now, AM_KLINE_TRADING_SESSION_WINDOWS)
 
         if in_window and not self.producer.is_running():
             _log("entering producer window, starting producer")

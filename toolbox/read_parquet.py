@@ -14,7 +14,7 @@ from framework.tick_manager import DEFAULT_TICK_HISTORY_DIR, code_parquet_path
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-DAY = 20260818
+DAY = 20260904
 CODE = "000001.SZ"
 
 
@@ -31,7 +31,7 @@ def main() -> None:
 
     print(df[[
         'local', 'time',
-        'lastPrice', 'high', 'low', 'lastClose', 'volume', 'amount',
+        'lastPrice', 'open', 'high', 'low', 'lastClose', 'volume', 'amount',
         'askPrice1', 'askVol1', 'bidPrice1', 'bidVol1',
         'askPrice2', 'askVol2', 'bidPrice2', 'bidVol2',
     ]])

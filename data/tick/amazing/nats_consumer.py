@@ -23,7 +23,8 @@ quote 字段为统一 tick 格式（见 data.tick.tick_quote，adapter 见 data.
    - 若某个 interval 内没有收到匹配的 tick，跳过 callback，不会传入空 dict。
 
 5. callback 串行
-   - 上一轮 callback 未完成时跳过本轮 dispatch。
+   - 上一轮 callback 未完成时跳过本轮 dispatch（新 tick 仍写入 buffer）。
+   - callback 结束后若 buffer 非空，立即补 dispatch，减少积压。
 
 用法示例
 --------
@@ -51,14 +52,15 @@ from nats.aio.client import Client as NATS
 from nats.aio.msg import Msg
 
 from credentials import NATS_AM_SUBJECT, NATS_CONSUMER_URL
-from data.tick.tick_quote import is_tick_quote
+from data.tick.tick_quote import QuoteDispatchBatch, is_tick_quote
+from framework.time_util import now_ms
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_DISPATCH_INTERVAL = 1.0
 
 Quotes = dict[str, dict[str, Any]]
-QuoteCallback = Callable[[Quotes], None]
+QuoteCallback = Callable[[QuoteDispatchBatch], None]
 
 _SUB_OK = 0
 _SUB_FAIL = -1
@@ -94,6 +96,7 @@ class AmazingNatsConsumer:
         self._callback: QuoteCallback | None = None
         self._code_list: frozenset[str] = frozenset()
         self._quotes: Quotes = {}
+        self._received_ms: dict[str, int] = {}
         self._callback_running = False
 
         self._runner_thread: threading.Thread | None = None
@@ -111,6 +114,7 @@ class AmazingNatsConsumer:
             self._callback = callback
             self._code_list = frozenset(code_list)
             self._quotes = {}
+            self._received_ms = {}
             self.quote_count = 0
             need_start = self._runner_thread is None or not self._runner_thread.is_alive()
 
@@ -137,6 +141,7 @@ class AmazingNatsConsumer:
             self._callback = None
             self._code_list = frozenset()
             self._quotes = {}
+            self._received_ms = {}
 
         logger.info("quote subscription stopped, quote_count=%d", self.quote_count)
         return _SUB_OK
@@ -192,12 +197,14 @@ class AmazingNatsConsumer:
             return
 
         # logger.debug(code)
+        receive_ms = now_ms()
         with self._lock:
             if self._callback is None:
                 return
             if self._code_list and code not in self._code_list:
                 return
             self._quotes[code] = quote
+            self._received_ms[code] = receive_ms
             self.quote_count += 1
 
     async def _dispatch_loop(self) -> None:
@@ -213,31 +220,32 @@ class AmazingNatsConsumer:
                 subscribed = self._callback is not None
 
             if subscribed:
-                await self._dispatch()
+                await self._dispatch_pending()
 
-    async def _dispatch(self) -> None:
-        """把缓存的 quotes 交给用户 callback。
+    async def _dispatch_pending(self) -> None:
+        while True:
+            if not await self._dispatch_once():
+                return
 
-        1. 若上一轮 callback 还在跑（_callback_running），本轮直接跳过。
-        2. 短暂持 _lock，把 _quotes swap 出来并清空，然后释放锁。
-        3. 用 asyncio.to_thread 在线程池执行 callback，不阻塞事件循环收消息。
-
-        注意：用户 callback 必须尽快返回，否则会拖慢后续 dispatch。
-        """
+    async def _dispatch_once(self) -> bool:
+        """dispatch 一批；若 callback 忙或 buffer 空则返回 False。"""
         if self._callback_running:
-            return
+            return False
 
         with self._lock:
             if self._callback is None or not self._quotes:
-                return
+                return False
             quotes, self._quotes = self._quotes, {}
+            received_ms, self._received_ms = self._received_ms, {}
             callback = self._callback
 
+        batch = QuoteDispatchBatch(quotes=quotes, received_ms=received_ms)
         self._callback_running = True
         try:
-            await asyncio.to_thread(callback, quotes)
+            await asyncio.to_thread(callback, batch)
         finally:
             self._callback_running = False
+        return True
 
     @staticmethod
     def _extract_code_and_quote(data: dict[str, Any]) -> tuple[str | None, dict[str, Any] | None]:

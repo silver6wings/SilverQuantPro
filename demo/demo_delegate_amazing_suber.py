@@ -1,7 +1,7 @@
 import datetime
 
 from data.tick.tick_quote import TickPayload
-from delegate.amazing_delegate import AmazingSubscriber
+from delegate.amazing_delegate import AmazingTickSubscriber
 
 
 def callback(payload: TickPayload) -> None:
@@ -9,7 +9,7 @@ def callback(payload: TickPayload) -> None:
 
 
 def demo() -> None:
-    subscriber = AmazingSubscriber()
+    subscriber = AmazingTickSubscriber()
     subscriber.set_sub_code_list(code_list=[
         '000001.SZ',    # stock
         '300001.SZ',    # stock

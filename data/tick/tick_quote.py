@@ -31,6 +31,8 @@ from typing import Any
 
 import pandas as pd
 
+from framework.time_util import now_ms
+
 # ---------------------------------------------------------------------------
 # 类型别名
 # ---------------------------------------------------------------------------
@@ -38,6 +40,14 @@ import pandas as pd
 TickQuoteDict = dict[str, Any]
 Numeric = float | int | None
 TickPayload = dict[str, TickQuoteDict]
+
+@dataclass(frozen=True, slots=True)
+class QuoteDispatchBatch:
+    """dispatch 交付批次：quotes + 各 code 消息到达时刻（ms）。"""
+
+    quotes: TickPayload
+    received_ms: dict[str, int]
+
 
 TickStoreRow = list[Any]
 TickStorePayload = dict[str, list[TickStoreRow]]
@@ -438,10 +448,6 @@ def is_tick_quote(data: Any) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def now_ms() -> int:
-    return int(datetime.now().timestamp() * 1000)
-
-
 def local_ms_from_hms(
     hour: int,
     minute: int,
@@ -512,13 +518,17 @@ def quote_to_store_row(quote: TickQuoteDict, local_ms: int) -> TickStoreRow:
 
 def quotes_to_store_payload(
     quotes: dict[str, Any],
-    local_ms: int,
+    received_ms: dict[str, int],
+    *,
+    default_local_ms: int | None = None,
 ) -> TickStorePayload:
-    """{code: quote} → {code: 拍平数值行}，供 today_ticks / parquet 使用。"""
+    """{code: quote} → {code: 拍平数值行}；local 优先用 received_ms[code]。"""
+    fallback_ms = default_local_ms if default_local_ms is not None else now_ms()
     payload: TickStorePayload = {}
     for code, quote in quotes.items():
         tick = resolve_tick_quote(quote)
         if tick is not None:
+            local_ms = received_ms.get(str(code), fallback_ms)
             payload[str(code)] = quote_to_store_row(tick, local_ms)
     return payload
 

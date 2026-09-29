@@ -142,3 +142,7 @@ cython_debug/
 _cache/*
 
 credentials.py
+
+tdx_lc5/data
+tdx_lc5/tmp
+tdx_lc5/_cache

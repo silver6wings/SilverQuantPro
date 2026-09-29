@@ -9,8 +9,11 @@ AMAZING_PORT = 0
 # NATS
 NATS_PRODUCER_URL = "nats://127.0.0.1:4222"       # 生产方连接地址（tick producer 推送用）
 NATS_CONSUMER_URL = "nats://127.0.0.1:4222"       # 消费方连接地址（tick consumer 订阅用）
+
 NATS_AM_SUBJECT = "market.tick.amazing"           # Amazing 行情 subject
 NATS_XT_SUBJECT = "market.tick.xtquant"           # xtquant 行情 subject
+
+NATS_AM_KLINE_SUBJECT = "market.kline.amazing"    # Amazing K 线 subject
 
 # xt producer：一条 NATS 消息里最多几个 code 的 quote（控制单包大小，避免 max_payload）
 NATS_XT_QUOTES_PER_MESSAGE = 1000

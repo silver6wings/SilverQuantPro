@@ -2,7 +2,7 @@
 Xtquant 行情生产调度器：常驻运行，管理 NATS 与 tick producer 子进程。
 
  - 启动时：拉起 data/job_nats_service.py
-- 每个交易日在 PRODUCER_WINDOWS 时段内运行 data/job_tick_xtquant.py（午休停推以节约资源）
+- 每个交易日在 PRODUCER_TRADING_SESSION_WINDOWS 时段内运行 data/job_tick_xtquant.py（午休停推以节约资源）
 - 调度器启动时若已在窗口内，会立即拉起 producer
 - 非交易日不启动 producer
 - 子进程 stdout/stderr 带前缀打印到本进程控制台
@@ -24,7 +24,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 from data.nats.nats_service import find_pids_on_port, is_nats_server_pid
-from framework.tick_subscriber import DEFAULT_QUOTE_WINDOWS, in_quote_windows
+from framework.trading_session import DEFAULT_TRADING_SESSION_WINDOWS, in_trading_session
 from tools.utils_remote_am import check_is_open_day
 from tools.utils_remote_xt import XtSectorType
 
@@ -33,7 +33,7 @@ NATS_SCRIPT = PROJECT_ROOT / "data" / "job_nats_service.py"
 PRODUCER_SCRIPT = PROJECT_ROOT / "data" / "job_tick_xtquant.py"
 NATS_PORT = 4222
 
-PRODUCER_WINDOWS = DEFAULT_QUOTE_WINDOWS
+PRODUCER_TRADING_SESSION_WINDOWS = DEFAULT_TRADING_SESSION_WINDOWS
 
 PRODUCER_SECTORS = (
     XtSectorType.SZ_STOCK,
@@ -41,11 +41,11 @@ PRODUCER_SECTORS = (
 )
 
 STOP_TIMEOUT_SEC = 30.0
-TICK_SEC = 1.0
+SCHEDULER_POLL_SEC = 1.0
 
 
-def _format_producer_windows() -> str:
-    return ", ".join(f"[{start}, {stop})" for start, stop in PRODUCER_WINDOWS)
+def _format_producer_session_windows() -> str:
+    return ", ".join(f"[{start}, {stop})" for start, stop in PRODUCER_TRADING_SESSION_WINDOWS)
 
 
 def _log(message: str) -> None:
@@ -189,15 +189,15 @@ class ProducerScheduler:
             time.sleep(2.0)
 
         _log(
-            f"ready; producer windows {_format_producer_windows()}, "
+            f"ready; producer session {_format_producer_session_windows()}, "
             f"sectors={','.join(PRODUCER_SECTORS)}"
         )
         self._sync_producer(datetime.now())
 
         try:
             while self._running:
-                self._tick()
-                time.sleep(TICK_SEC)
+                self._poll_scheduler()
+                time.sleep(SCHEDULER_POLL_SEC)
         finally:
             self.shutdown()
 
@@ -217,7 +217,7 @@ class ProducerScheduler:
 
     def _sync_producer(self, now: datetime) -> None:
         trading = self._is_trading_day_cached(now.date())
-        in_window = trading and in_quote_windows(now)
+        in_window = trading and in_trading_session(now, PRODUCER_TRADING_SESSION_WINDOWS)
 
         if in_window and not self.producer.is_running():
             _log("entering producer window, starting producer")
@@ -227,7 +227,7 @@ class ProducerScheduler:
             _log(f"{reason}, stopping producer")
             self.producer.stop()
 
-    def _tick(self) -> None:
+    def _poll_scheduler(self) -> None:
         if self._using_external_nats:
             pids = find_pids_on_port(NATS_PORT)
             if _is_nats_listener(pids):

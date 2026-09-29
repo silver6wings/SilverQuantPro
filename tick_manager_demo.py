@@ -48,6 +48,11 @@ CODE_LIST = [
     "113066.SH",    # kzz
 ]
 
+# from tools.utils_cache import get_prefixes_stock_codes
+# CODE_LIST = get_prefixes_stock_codes({'00', '60', '30', '68'})
+
+print('订阅:', len(CODE_LIST), CODE_LIST)
+
 
 def setup_logging() -> None:
     _LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -63,15 +68,15 @@ def setup_logging() -> None:
 
 
 def on_quotes(hour: int, minute: int, second: int, quotes: dict) -> None:
-    sample_codes = list(quotes.keys())[:5]
+    sample_code = next(iter(quotes)) if quotes else None
+    sample_quote = quotes.get(sample_code) if sample_code else None
     print(
         datetime.datetime.now(),
         f"{hour:02d}:{minute:02d}:{second:02d}",
         f"quotes={len(quotes)}",
-        f"sample={sample_codes}",
+        f"sample={sample_code}",
+        sample_quote,
     )
-    for code, quote in quotes.items():
-        print(code, quote)
 
 
 def main() -> None:

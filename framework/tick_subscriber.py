@@ -3,8 +3,9 @@
 
 整合 AM_NATS / AM_DIRECT / XT_NATS / XT_DIRECT 四路后端，提供：
 - on_quotes(hour, minute, second, quotes) 回调，quotes 为 {code: TickQuoteDict}
+- dispatch 按 interval 聚合；消息到达时记录 received_ms，落盘 local 用到达时刻
+- callback 结束后立即补 dispatch，减少策略侧等待
 - record 时将 quote 拍平存入 today_ticks，列下标见 tick_quote.TickCol
-- 可选 tick_manager：15:05 自动落盘 parquet
 
 用法示例
 --------
@@ -34,11 +35,19 @@ from enum import Enum
 from typing import Any, Protocol
 
 from data.tick.tick_quote import (
+    QuoteDispatchBatch,
     TickPayload,
     copy_tick_rows,
     local_ms_from_hms,
     parse_hms,
     quotes_to_store_payload,
+)
+from framework.time_util import now_ms
+from framework.trading_session import (
+    DEFAULT_TRADING_SESSION_WINDOWS,
+    TradingSessionWindows,
+    has_trading_session_windows,
+    in_trading_session,
 )
 from framework.tick_manager import (
     DEFAULT_TICK_HISTORY_DIR,
@@ -54,20 +63,13 @@ logger = logging.getLogger(__name__)
 
 RawQuotes = dict[str, Any]
 Quotes = TickPayload
-BackendQuoteCallback = Callable[[RawQuotes], None]
+BackendQuoteCallback = Callable[[QuoteDispatchBatch], None]
 QuoteCallback = Callable[[int, int, int, Quotes], None]
-QuoteWindows = list[list[str]] | tuple[tuple[str, str], ...] | None  # quote_window 入参类型
-
 _SUB_OK = 0          # subscribe / unsubscribe 成功
 _SUB_FAIL = -1       # subscribe / unsubscribe 失败
 
 _DEFAULT_LOG_NAME = "tick_subscriber"         # run() 控制台日志前缀
 _DEFAULT_DISPATCH_INTERVAL = 1.0              # 后端 batch 间隔 & 主循环 sleep（秒）
-
-DEFAULT_QUOTE_WINDOWS: tuple[tuple[str, str], ...] = (  # 默认订阅窗口；None 或空则不订阅
-    ("09:14:30", "11:30:30"),
-    ("12:59:30", "15:00:30"),
-)
 
 _CLEAR_TICK_TODAY_BEFORE = "09:15"              # 此时间前清空前一日 today_ticks 内存
 
@@ -83,11 +85,6 @@ class ConsumerType(str, Enum):
     XT_DIRECT = "xt_direct"
 
 
-def _seconds(text: str) -> int:
-    hour, minute, second = parse_hms(text)
-    return hour * 3600 + minute * 60 + second
-
-
 def _minutes_of_day(now: datetime) -> int:
     return now.hour * 60 + now.minute
 
@@ -95,15 +92,6 @@ def _minutes_of_day(now: datetime) -> int:
 def _before_clear_tick_today(now: datetime) -> bool:
     hour, minute, _ = parse_hms(_CLEAR_TICK_TODAY_BEFORE)
     return _minutes_of_day(now) < hour * 60 + minute
-
-
-def _has_quote_window(windows: QuoteWindows) -> bool:
-    return bool(windows)
-
-
-def in_quote_windows(now: datetime, windows: QuoteWindows = None) -> bool:
-    current = now.hour * 3600 + now.minute * 60 + now.second
-    return any(_seconds(start) <= current < _seconds(stop) for start, stop in windows or DEFAULT_QUOTE_WINDOWS)
 
 
 # -----------------------
@@ -127,6 +115,7 @@ class _QuoteBatchBuffer:
         self._lock = threading.Lock()
         self._callback: BackendQuoteCallback | None = None
         self._quotes: RawQuotes = {}
+        self._received_ms: dict[str, int] = {}
         self._callback_running = False
         self._running = False
         self._thread: threading.Thread | None = None
@@ -137,6 +126,7 @@ class _QuoteBatchBuffer:
                 return False
             self._callback = callback
             self._quotes = {}
+            self._received_ms = {}
         if not self._running:
             self._running = True
             self._thread = threading.Thread(
@@ -153,6 +143,7 @@ class _QuoteBatchBuffer:
                 return False
             self._callback = None
             self._quotes = {}
+            self._received_ms = {}
         self._running = False
         thread = self._thread
         if thread is not None and thread.is_alive():
@@ -160,37 +151,49 @@ class _QuoteBatchBuffer:
         return True
 
     def push(self, payload: RawQuotes) -> None:
+        receive_ms = now_ms()
         with self._lock:
             if self._callback is None:
                 return
-            self._quotes.update(payload)
+            for code, quote in payload.items():
+                self._quotes[str(code)] = quote
+                self._received_ms[str(code)] = receive_ms
 
     def _loop(self) -> None:
         while self._running:
             time.sleep(self.interval)
+            self._dispatch_pending()
+
+    def _dispatch_pending(self) -> None:
+        while self._running:
             if self._callback_running:
-                continue
+                return
             with self._lock:
                 if self._callback is None or not self._quotes:
-                    continue
+                    return
                 quotes, self._quotes = self._quotes, {}
+                received_ms, self._received_ms = self._received_ms, {}
                 callback = self._callback
+            batch = QuoteDispatchBatch(quotes=quotes, received_ms=received_ms)
             self._callback_running = True
             try:
-                callback(quotes)
+                callback(batch)
             except Exception:
                 logger.exception("%s callback failed", self._label)
             finally:
                 self._callback_running = False
+            with self._lock:
+                if not self._quotes:
+                    return
 
 
 class AmazingDirectQuoteBackend:
-    """AmazingData 直连后端，包装 delegate.amazing_delegate.AmazingSubscriber。
+    """AmazingData 直连后端，包装 delegate.amazing_delegate.AmazingTickSubscriber。
 
     限制：Amazing SDK 的 SubscribeData.run() 无法在同进程内干净地 stop 后再 restart；
     stop 仅禁用 callback，底层订阅线程仍阻塞在 run()。因此不适合 TickSubscriber 的
     「午休 unsub / 下午再 sub」这类同进程多次启停；更适合进程级「开一次、关一次」，
-    或 quote_window 覆盖全天且不做中途 unsub 的场景。
+    或 trading_session_windows 覆盖全天且不做中途 unsub 的场景。
     """
 
     def __init__(self, interval: float = _DEFAULT_DISPATCH_INTERVAL) -> None:
@@ -198,11 +201,11 @@ class AmazingDirectQuoteBackend:
         self._subscriber: Any = None
 
     def subscribe_whole_quote(self, code_list: list[str], callback: BackendQuoteCallback) -> int:
-        from delegate.amazing_delegate import AmazingSubscriber
+        from delegate.amazing_delegate import AmazingTickSubscriber
 
         if not self._buffer.start(callback):
             return _SUB_FAIL
-        self._subscriber = AmazingSubscriber()
+        self._subscriber = AmazingTickSubscriber()
         self._subscriber.set_sub_code_list(code_list)
         self._subscriber.start_sub(self._buffer.push)
         logger.info(
@@ -302,7 +305,7 @@ class TickSubscriber:
 
     # --- 可选 ---
     dispatch_interval: float = _DEFAULT_DISPATCH_INTERVAL  # 后端 batch 间隔 & 主循环 tick 间隔（秒）
-    quote_window: QuoteWindows = DEFAULT_QUOTE_WINDOWS
+    trading_session_windows: TradingSessionWindows = DEFAULT_TRADING_SESSION_WINDOWS
     record_tick_today: bool = False                        # 内存缓存当日 on_quotes
     save_tick_history: bool = False                        # 15:05 自动落盘（须有 record 数据）
     tick_manager: TickManager | None = None                # tick 数据总入口；save_tick_history=True 且为 None 时自动创建
@@ -365,7 +368,7 @@ class TickSubscriber:
 
         try:
             while self._running:
-                self._tick(datetime.now())
+                self._poll_loop(datetime.now())
                 time.sleep(self.dispatch_interval)
         finally:
             self.shutdown()
@@ -412,12 +415,16 @@ class TickSubscriber:
                 self._tick_today_date = None
                 self._log("tick today cleared (before 09:15, previous day)")
 
-    def _record_quotes(self, quotes: Quotes, now: datetime) -> None:
-        if not quotes:
+    def _record_quotes(self, batch: QuoteDispatchBatch, now: datetime) -> None:
+        if not batch.quotes:
             return
         today = now.date()
-        local_ms = local_ms_from_hms(now.hour, now.minute, now.second, today=today)
-        rows_by_code = quotes_to_store_payload(quotes, local_ms)
+        fallback_ms = local_ms_from_hms(now.hour, now.minute, now.second, today=today)
+        rows_by_code = quotes_to_store_payload(
+            batch.quotes,
+            batch.received_ms,
+            default_local_ms=fallback_ms,
+        )
         if not rows_by_code:
             return
         with self._tick_today_lock:
@@ -440,34 +447,37 @@ class TickSubscriber:
             return
         self._tick_manager.maybe_auto_save(now, today, self._snapshot_tick_today(), log=self._log)
 
-    def _quotes_callback(self, now: datetime, quotes: Quotes) -> None:
-        self.on_quotes(now.hour, now.minute, now.second, quotes)
+    def _quotes_callback(self, now: datetime, batch: QuoteDispatchBatch) -> None:
+        self.on_quotes(now.hour, now.minute, now.second, batch.quotes)
         if self.record_tick_today:
-            self._record_quotes(quotes, now)
+            self._record_quotes(batch, now)
+
+    def _dispatch_batch(self, batch: QuoteDispatchBatch) -> None:
+        now = datetime.now()
+        if self.record_tick_today:
+            self._quotes_callback(now, batch)
+        else:
+            self.on_quotes(now.hour, now.minute, now.second, batch.quotes)
 
     # -----------------------
     # 订阅 / 退订
     # -----------------------
 
     def _maybe_subscribe_on_startup(self) -> None:
-        if not _has_quote_window(self.quote_window):
+        if not has_trading_session_windows(self.trading_session_windows):
             return
         now = datetime.now()
-        if not in_quote_windows(now, self.quote_window):
+        if not in_trading_session(now, self.trading_session_windows):
             return
         if not self._subscribed:
-            self._log("within quote window on startup, subscribing")
+            self._log("within trading session on startup, subscribing")
             self._do_subscribe("startup")
 
     def _do_subscribe(self, reason: str) -> None:
-        def backend_callback(raw_quotes: RawQuotes) -> None:
-            if not raw_quotes:
+        def backend_callback(batch: QuoteDispatchBatch) -> None:
+            if not batch.quotes:
                 return
-            now = datetime.now()
-            if self.record_tick_today:
-                self._quotes_callback(now, raw_quotes)
-            else:
-                self.on_quotes(now.hour, now.minute, now.second, raw_quotes)
+            self._dispatch_batch(batch)
 
         result = self._backend.subscribe_whole_quote(self.code_list, backend_callback)
         if result != _SUB_OK:
@@ -489,21 +499,21 @@ class TickSubscriber:
     # 定时调度主循环
     # -----------------------
 
-    def _tick(self, now: datetime) -> None:
+    def _poll_loop(self, now: datetime) -> None:
         today = now.date()
         self._maybe_clear_tick_today(now, today)
         self._maybe_auto_save_ticks(now, today)
-        self._tick_window(now)
+        self._poll_trading_session(now)
 
-    def _tick_window(self, now: datetime) -> None:
-        if not _has_quote_window(self.quote_window):
+    def _poll_trading_session(self, now: datetime) -> None:
+        if not has_trading_session_windows(self.trading_session_windows):
             return
 
-        if in_quote_windows(now, self.quote_window):
+        if in_trading_session(now, self.trading_session_windows):
             if not self._subscribed:
-                self._do_subscribe("quote window")
+                self._do_subscribe("trading session")
         elif self._subscribed:
-            self._do_unsubscribe("outside quote window")
+            self._do_unsubscribe("outside trading session")
 
     # -----------------------
     # 内部工具
@@ -515,6 +525,6 @@ class TickSubscriber:
         logger.info("[%s] %s", _DEFAULT_LOG_NAME, message)
 
     def _format_window(self) -> str:
-        if not _has_quote_window(self.quote_window):
+        if not has_trading_session_windows(self.trading_session_windows):
             return "none"
-        return ", ".join(f"[{start}, {stop})" for start, stop in self.quote_window)
+        return ", ".join(f"[{start}, {stop})" for start, stop in self.trading_session_windows)
