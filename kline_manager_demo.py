@@ -1,5 +1,5 @@
 """
-KlineSubscriber demo：消费 Amazing K 线 NATS 流。
+KlineSubscriber demo：消费 Amazing K 线 NATS 流，并按日落盘 parquet。
 
 前置条件
 --------
@@ -10,6 +10,8 @@ KlineSubscriber demo：消费 Amazing K 线 NATS 流。
     PYTHONPATH=. python kline_manager_demo.py
 
 on_klines(hour, minute, second, batch)：batch.bars 为 KlineBarDispatch 列表。
+同一 (code, period, timestamp) 只保留最后一笔；15:50 写入
+_cache/kline_history/{day}/{code}.parquet。进程需保持运行到落盘时刻。
 """
 from __future__ import annotations
 
@@ -18,6 +20,7 @@ import logging
 from pathlib import Path
 
 from data.kline.kline_entity import KlineDispatchBatch
+from framework.kline_manager import KlineManager
 from framework.kline_subscriber import KlineSubscriber
 from framework.trading_session import AM_KLINE_TRADING_SESSION_WINDOWS
 
@@ -73,11 +76,16 @@ def on_klines(hour: int, minute: int, second: int, batch: KlineDispatchBatch) ->
 def main() -> None:
     setup_logging()
 
+    kline_manager = KlineManager()
+
     sub = KlineSubscriber(
         code_list=list(CODE_LIST),
         on_klines=on_klines,
         dispatch_interval=DISPATCH_INTERVAL,
         trading_session_windows=AM_KLINE_TRADING_SESSION_WINDOWS,
+        record_kline_today=True,
+        save_kline_history=True,
+        kline_manager=kline_manager,
     )
     sub.run()
 

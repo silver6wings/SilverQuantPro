@@ -12,5 +12,6 @@ pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple/
 Amazing 银河数智开发库安装
 ```
 pip install ./_wheel/tgw-1.0.8.7-py3-none-any.whl
-pip install ./_wheel/AmazingData-1.1.7-cp310-none-any.whl
+pip install ./_wheel/AmazingData-1.1.7-cp310-none-any.whl -i https://pypi.tuna.tsinghua.edu.cn/simple/
 ```
+ 

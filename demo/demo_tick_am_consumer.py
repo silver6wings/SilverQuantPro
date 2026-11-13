@@ -34,26 +34,28 @@ callback 编写原则
 
 3. 不要阻塞、不要死循环
    - 禁止 time.sleep、无限等待、join 其他慢线程。
-   - quotes 是已 swap 出来的副本，可安全读写，但不要依赖「下一轮很快再来」。
+   - batch.quotes 是已 swap 出来的副本，可安全读写，但不要依赖「下一轮很快再来」。
 
 4. 按批处理，按 code 聚合
-   - 每次回调的 quotes 是 {code: quote_dict}，同一 code 在批内只有最新一条。
-   - 遍历 quotes.items() 处理即可，不要假设固定有哪些 code。
+   - 回调参数是 QuoteDispatchBatch；batch.quotes 是 {code: quote_dict}，同一 code 在批内只有最新一条。
+   - 遍历 batch.quotes.items() 处理即可，不要假设固定有哪些 code。
 
 5. 容错
    - callback 内异常不会搞垮 consumer，但该批数据处理会中断；关键逻辑自行 try/except。
 
 推荐写法
 --------
-    def callback_sub_whole(quotes: dict) -> None:
+    def callback_sub_whole(batch: QuoteDispatchBatch) -> None:
         # 只统计、抽样，或写入内存/队列
-        for code, quote in quotes.items():
+        for code, quote in batch.quotes.items():
             ...
 """
+import datetime
 import logging
 from pathlib import Path
 
 from data.tick.amazing.nats_consumer import AmazingNatsConsumer
+from data.tick.tick_quote import QuoteDispatchBatch
 
 _LOG_LEVEL = logging.DEBUG
 _LOG_PATH = Path("_cache/demo_consumer.log")
@@ -100,12 +102,12 @@ def main() -> None:
         consumer.unsubscribe_quote()
 
 
-def callback_sub_whole(quotes: dict) -> None:
+def callback_sub_whole(batch: QuoteDispatchBatch) -> None:
+    quotes = batch.quotes
     print(datetime.datetime.now(), f"quotes: {len(quotes)}")
-    for code in quotes:
-        print(code, quotes[code])
+    for code, quote in quotes.items():
+        print(code, quote)
 
 
 if __name__ == "__main__":
-    import datetime
     main()

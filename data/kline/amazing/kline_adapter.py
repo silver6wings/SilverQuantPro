@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import AmazingData as ad
 
+from data.kline.amazing.kline_time import amazing_kline_time_to_epoch_ms
 from data.kline.kline_entity import KlinePayload, build_kline_bar
 
 Kline = ad.constant.Kline
@@ -23,7 +24,7 @@ def kline_to_payload(data: Kline, period_seconds: int) -> KlinePayload:
 
     return {
         data.code: build_kline_bar(
-            timestamp=int(data.kline_time.timestamp() * 1000),
+            timestamp=amazing_kline_time_to_epoch_ms(data.kline_time),
             period=period_seconds,
             open=data.open,
             high=data.high,

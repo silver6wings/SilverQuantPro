@@ -30,7 +30,8 @@ quote 字段为统一 tick 格式（见 data.tick.tick_quote，adapter 见 data.
 --------
     consumer = AmazingNatsConsumer(interval=1.0)
 
-    def callback_sub_whole(quotes: dict) -> None:
+    def callback_sub_whole(batch: QuoteDispatchBatch) -> None:
+        quotes = batch.quotes
         ...
 
     if consumer.subscribe_whole_quote(["000001.SZ"], callback_sub_whole) != 0:

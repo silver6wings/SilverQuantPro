@@ -14,6 +14,7 @@ import datetime
 import logging
 from pathlib import Path
 
+from data.tick.tick_quote import QuoteDispatchBatch
 from data.tick.xtquant.nats_consumer import XtquantNatsConsumer
 
 _LOG_PATH = Path("_cache/demo_xt_consumer.log")
@@ -46,7 +47,8 @@ def setup_logging() -> None:
     )
 
 
-def callback_sub_whole(quotes: dict) -> None:
+def callback_sub_whole(batch: QuoteDispatchBatch) -> None:
+    quotes = batch.quotes
     sample_codes = list(quotes.keys())[:5]
     print(datetime.datetime.now(), f"quotes={len(quotes)}", f"sample={sample_codes}")
 

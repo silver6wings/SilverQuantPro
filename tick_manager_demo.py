@@ -34,22 +34,22 @@ from framework.tick_subscriber import (
 CONSUMER_TYPE = ConsumerType.AM_NATS
 _LOG_PATH = Path("_cache/tick_manager_demo.log")
 
-CODE_LIST = [
-    "000001.SZ",    # stock
-    "300001.SZ",    # stock
-    "600000.SH",    # stock
-    "688001.SH",    # stock
-    "920000.BJ",    # stock
-    "000001.SH",    # index
-    "399001.SZ",    # index
-    "159159.SZ",    # etf
-    "510510.SH",    # etf
-    "123268.SZ",    # kzz
-    "113066.SH",    # kzz
-]
+# CODE_LIST = [
+#     "000001.SZ",    # stock
+#     "300001.SZ",    # stock
+#     "600000.SH",    # stock
+#     "688001.SH",    # stock
+#     "920000.BJ",    # stock
+#     "000001.SH",    # index
+#     "399001.SZ",    # index
+#     "159159.SZ",    # etf
+#     "510510.SH",    # etf
+#     "123268.SZ",    # kzz
+#     "113066.SH",    # kzz
+# ]
 
-# from tools.utils_cache import get_prefixes_stock_codes
-# CODE_LIST = get_prefixes_stock_codes({'00', '60', '30', '68'})
+from tools.utils_cache import get_prefixes_stock_codes
+CODE_LIST = get_prefixes_stock_codes({'00', '60', '30', '68'})
 
 print('订阅:', len(CODE_LIST), CODE_LIST)
 

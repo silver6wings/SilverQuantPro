@@ -16,7 +16,7 @@ DEFAULT_TRADING_SESSION_WINDOWS: tuple[tuple[str, str], ...] = (
 # Amazing K 线：producer 推送与 NATS consumer（lc5 writer 等）共用；左闭右开 [start, stop)
 # 下午 stop 延后，等待 5 分钟收盘 bar 尾包（实测部分代码 ~15:06+ 才到）
 AM_KLINE_TRADING_SESSION_WINDOWS: tuple[tuple[str, str], ...] = (
-    ("09:14:30", "11:30:30"),
+    ("09:14:30", "11:45:30"),
     ("12:59:30", "15:45:30"),
 )
 
